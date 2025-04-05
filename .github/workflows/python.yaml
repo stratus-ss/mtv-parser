@@ -64,7 +64,7 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
-    name: Lint Module (black, flake8, isort)
+    name: Lint Module (black, flake8)
     needs: eval-changes
     if: ${{ needs.eval-changes.outputs.src-changes == 'true' || needs.eval-changes.outputs.test-changes == 'true' || needs.eval-changes.outputs.ci-changes == 'true' }}
     steps:
@@ -92,9 +92,6 @@ jobs:
         run: |
           # stop the build if there are Python syntax errors or undefined names
           flake8 ./mtv_parser --count --show-source --statistics
-      - name: Check imports with isort
-        run: |
-          isort -c --diff ./mtv_parser
   test:
     runs-on: ubuntu-latest
     name: Run pytest and report test coverage

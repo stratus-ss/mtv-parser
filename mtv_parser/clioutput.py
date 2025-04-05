@@ -3,7 +3,6 @@ import sys
 import typing as t
 import weakref
 
-import pandas as pd
 from tabulate import tabulate
 
 
@@ -67,21 +66,26 @@ class CLIOutput:
             self._finalize()
             self._closed = True
 
-    def migration_output(self, migrations: list, type_of_migration: str) -> None:
+    def migration_output(self: t.Self, migrations: list, type_of_migration: str) -> str:
         rows = []
         number_of_migrations = len(migrations)
         average_time = sum(item["total_duration_mins"] for item in migrations) / number_of_migrations
         total_number_of_vms = sum(item["vms"] for item in migrations)
         total_disk_size_for_migration = sum(item["total_disk_size"] for item in migrations) / 1024
-        average_disk_size_gb =  total_disk_size_for_migration / number_of_migrations 
+        average_disk_size_gb = total_disk_size_for_migration / number_of_migrations
         average_transfer_speed = average_disk_size_gb / average_time
         # Find max duration and corresponding plan name
         max_minutes = max(item["total_duration_mins"] for item in migrations)
         longest_plan = next(item for item in migrations if item["total_duration_mins"] == max_minutes)
         longest_disk_size_gb = longest_plan["total_disk_size"] / 1024
-        longest_transfer_speed =  longest_disk_size_gb/ max_minutes
+        longest_transfer_speed = longest_disk_size_gb / max_minutes
         min_minutes = min(item["total_duration_mins"] for item in migrations)
-
+        report_header = "MIGRATION REPORT"
+        sep = "=" * len(report_header)
+        rows.append([""])
+        rows.append([report_header])
+        rows.append([sep])
+        rows.append([""])
         header = f"The number of {type_of_migration} migrations:"
         sep = "-" * len(header)
         rows.append([header, number_of_migrations])
@@ -90,16 +94,21 @@ class CLIOutput:
         rows.append(["Plan with longest runtime: ", longest_plan["name"]])
         rows.append(["Longest runtime in minutes: ", f"{max_minutes:.1f}"])
         rows.append(["Total disk size in longest plan (GB): ", longest_disk_size_gb])
-        rows.append(["Transferred data per hour in longest plan (GB): ", f"{longest_transfer_speed:.1f}"])
+        rows.append(
+            [
+                "Transferred data per hour in longest plan (GB): ",
+                f"{longest_transfer_speed:.1f}",
+            ]
+        )
         rows.append(["Shortest runtime in minutes: ", f"{min_minutes:.1f}"])
         rows.append(["Average runtime in minutes: ", f"{average_time:.1f}"])
         rows.append(["Average disk size (GB): ", f"{average_disk_size_gb:.1f}"])
         rows.append(["Average transfer per hour (GB): ", f"{average_transfer_speed:.1f}"])
         rows.append(["Total Disk Size Migrated (GB): ", f"{total_disk_size_for_migration}"])
 
-        return (tabulate(rows, tablefmt="plain"))
+        return tabulate(rows, tablefmt="plain")
 
-    def operating_system_report(self, all_vms: dict):
+    def operating_system_report(self: t.Self, all_vms: dict) -> str:
         rows = []
         os_header = "OS REPORT"
         sep = "=" * len(os_header)
@@ -112,53 +121,67 @@ class CLIOutput:
             sep = "-" * len(header)
             total_disk_size = 0
             for vm in all_vms[os]:
-                total_disk_size += vm['disk_size'] / 1024
+                total_disk_size += vm["disk_size"] / 1024
             rows.append([header])
             rows.append([sep])
             rows.append(["Number of VMs: ", f"{len(all_vms[os])}"])
             rows.append(["Total Disk Size (GB):", f"{total_disk_size}"])
             rows.append([])
-            
-        return(tabulate(rows, tablefmt="plain"))
 
-    def generate_concurrency_report(self, concurrency_data):
+        return tabulate(rows, tablefmt="plain")
+
+    def generate_concurrency_report(self: t.Self, concurrency_data: dict) -> str:
         """Generate a textual report of VM concurrency."""
         rows = []
         header = "CONCURRENCY REPORT"
         sep = "=" * len(header)
-        
+
         rows.append([""])
         rows.append([header])
         rows.append([sep])
         rows.append([""])
-        
+
         if not concurrency_data:
             rows.append(["No concurrency data available."])
             return tabulate(rows, tablefmt="plain")
-        
-        rows.append(["Peak concurrent VMs:", concurrency_data.get('max_concurrent_total', 0)])
-        rows.append(["Peak time:", concurrency_data.get('peak_time', 'Unknown')])
-        rows.append(["Average concurrent VMs:", concurrency_data.get('average_concurrent_vms', 0)])
-        
+
+        rows.append(["Peak concurrent VMs:", concurrency_data.get("max_concurrent_total", 0)])
+        rows.append(["Peak time:", concurrency_data.get("peak_time", "Unknown")])
+        rows.append(
+            [
+                "Average concurrent VMs:",
+                concurrency_data.get("average_concurrent_vms", 0),
+            ]
+        )
+
         rows.append([""])
-        rows.append(["Maximum concurrent VMs by OS type:"])
-        for os_type, count in sorted(concurrency_data.get('max_concurrent', {}).items()):
+        rows.append([""])
+        max_concur_header = "Maximum concurrent VMs by OS type:"
+        sep = "-" * len(max_concur_header)
+        rows.append([max_concur_header])
+        rows.append([sep])
+        for os_type, count in sorted(concurrency_data.get("max_concurrent", {}).items()):
             rows.append([f" {os_type}:", count])
-        
-        if concurrency_data.get('significant_drops'):
+
+        if concurrency_data.get("significant_drops"):
             rows.append([""])
             rows.append(["Significant drops in concurrency:"])
-            for i, drop in enumerate(concurrency_data['significant_drops'], 1):
+            for i, drop in enumerate(concurrency_data["significant_drops"], 1):
                 rows.append([f" Drop {i}:"])
-                rows.append([f"   Time:", drop['time']])
+                rows.append(["   Time:", drop["time"]])
                 rows.append([f"   From {drop['from']} to {drop['to']} VMs"])
-                rows.append([f"   Minutes after peak:", f"{drop['duration_mins']:.1f}"])
-        
-        if concurrency_data.get('hourly_concurrent_vms'):
+                rows.append(["   Minutes after peak:", f"{drop['duration_mins']:.1f}"])
+
+        if concurrency_data.get("hourly_concurrent_vms"):
             rows.append([""])
-            rows.append(["Hourly concurrent VMs:"])
-            for data in concurrency_data['hourly_concurrent_vms']:
-                hour_str = data['hour'].strftime('%Y-%m-%d %H:%M')
+            rows.append([""])
+            hourly_header = "Hourly concurrent VMs:"
+            sep = "-" * len(hourly_header)
+            rows.append([hourly_header])
+            rows.append([sep])
+            for data in concurrency_data["hourly_concurrent_vms"]:
+                hour_str = data["hour"].strftime("%Y-%m-%d %H:%M")
                 rows.append([f" {hour_str}:", f"{data['vms']} VMs"])
-        
+        rows.append([""])
+        rows.append([""])
         return tabulate(rows, tablefmt="plain")

@@ -1,3 +1,8 @@
+pytest
+pytest-cov
+pytest-mpl
+pytest-mock
+pytest-xdist
 black >= 24.8.0
 coverage[toml] >= 7.6.0
 flake8 >= 7.1.0
