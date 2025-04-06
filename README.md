@@ -23,7 +23,7 @@ VM Migration Analyzer can be installed directly from GitHub using pip, or execut
 > [!NOTE]
 > Matplotlib cannot currently show you the chart interactively without appropriate configuration of your local container engine. You should mount a volume so that the image can be exported out of the container.
 
-## Building
+#### Building
 There is a container file located in this repository. The build is small and has been tested with podman.
 
 ```
@@ -31,7 +31,7 @@ podman build . -t mtv-parser
 podman run -v ./<YOUR_FILE.yaml>:/mtv-parser/examples/vm-plans-sample2.yaml -v /your/local/chart/dir:/mtv-parser/charts mtv-parser
 ```
 
-## Using the prebuilt 
+#### Using the prebuilt 
 
 You can pull from the pre-built container from Quay. There are both `ubi9-stable` and `ubi9-dev`. The `dev` is considered the unstable.
 
