@@ -78,6 +78,6 @@ def plot_gantt_chart(data: dict) -> None:
     plt.tight_layout()
 
     # Save the plot
-    plt.savefig("migration_gantt_chart.png", dpi=300)
+    plt.savefig("charts/migration_gantt_chart.png", dpi=300)
     plt.show()
     plt.close()
