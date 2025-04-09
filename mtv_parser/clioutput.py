@@ -66,46 +66,36 @@ class CLIOutput:
             self._finalize()
             self._closed = True
 
-    def migration_output(self: t.Self, migrations: list, type_of_migration: str) -> str:
-        rows = []
-        number_of_migrations = len(migrations)
-        average_time = sum(item["total_duration_mins"] for item in migrations) / number_of_migrations
-        total_number_of_vms = sum(item["vms"] for item in migrations)
-        total_disk_size_for_migration = sum(item["total_disk_size"] for item in migrations) / 1024
-        average_disk_size_gb = total_disk_size_for_migration / number_of_migrations
-        average_transfer_speed = average_disk_size_gb / average_time
-        # Find max duration and corresponding plan name
-        max_minutes = max(item["total_duration_mins"] for item in migrations)
-        longest_plan = next(item for item in migrations if item["total_duration_mins"] == max_minutes)
-        longest_disk_size_gb = longest_plan["total_disk_size"] / 1024
-        longest_transfer_speed = longest_disk_size_gb / max_minutes
-        min_minutes = min(item["total_duration_mins"] for item in migrations)
+    def migration_output(self: t.Self,  migration_info: dict, type_of_migration: str) -> str:
         report_header = "MIGRATION REPORT"
         sep = "=" * len(report_header)
+        rows = []
         rows.append([""])
         rows.append([report_header])
         rows.append([sep])
         rows.append([""])
+        
         header = f"The number of {type_of_migration} migrations:"
         sep = "-" * len(header)
-        rows.append([header, number_of_migrations])
+        
+        rows.append([header, migration_info['number_of_migrations']])
         rows.append([sep])
-        rows.append(["The number of vms:", total_number_of_vms])
-        rows.append(["Plan with longest runtime: ", longest_plan["name"]])
-        rows.append(["Longest runtime in minutes: ", f"{max_minutes:.1f}"])
-        rows.append(["Total disk size in longest plan (GB): ", longest_disk_size_gb])
-        rows.append(
-            [
-                "Transferred data per hour in longest plan (GB): ",
-                f"{longest_transfer_speed:.1f}",
-            ]
-        )
-        rows.append(["Shortest runtime in minutes: ", f"{min_minutes:.1f}"])
-        rows.append(["Average runtime in minutes: ", f"{average_time:.1f}"])
-        rows.append(["Average disk size (GB): ", f"{average_disk_size_gb:.1f}"])
-        rows.append(["Average transfer per hour (GB): ", f"{average_transfer_speed:.1f}"])
-        rows.append(["Total Disk Size Migrated (GB): ", f"{total_disk_size_for_migration}"])
-
+        
+        rows.append(["The number of vms:", migration_info['total_number_of_vms']])
+        rows.append(["Number of Cold Migrated VMs: ", migration_info['cold_migrated_vms']])
+        rows.append(["Number of Warm Migrated VMs: ", migration_info['warm_migrated_vms']])
+        rows.append(["Plan with longest runtime: ", migration_info['longest_plan']["name"]])
+        rows.append(["Longest runtime in minutes: ", f"{migration_info['max_minutes']:.1f}"])
+        rows.append(["Total disk size in longest plan (GB): ", migration_info['longest_disk_size_gb']])
+        rows.append(["Transferred data per hour in longest plan (GB): ", f"{migration_info['longest_transfer_speed']:.1f}"])
+        rows.append(["Shortest runtime in minutes: ", f"{migration_info['min_minutes']:.1f}"])
+        rows.append(["Average runtime in minutes: ", f"{migration_info['average_time']:.1f}"])
+        rows.append(["Average disk size (GB): ", f"{migration_info['average_disk_size_gb']:.1f}"])
+        rows.append(["Average transfer per hour (GB): ", f"{migration_info['average_transfer_speed']:.1f}"])
+        rows.append(["Total Disk Size Migrated (GB): ", migration_info['total_disk_size_for_migration']])
+        rows.append(["Number of Warm Migrations: ", migration_info['warm_migrations']])
+        rows.append(["Number of Cold Migrations: ", migration_info['cold_migrations']])
+        
         return tabulate(rows, tablefmt="plain")
 
     def operating_system_report(self: t.Self, all_vms: dict) -> str:

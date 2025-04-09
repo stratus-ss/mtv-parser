@@ -22,7 +22,8 @@ from collections import defaultdict
                     "precopies": [
                         {"start": "2024-07-24T10:00:00", "end": "2024-07-24T11:00:00"}
                     ]
-                }
+                },
+                "migration_type" : "warm"
             },
             {
                 "status": {
@@ -43,7 +44,8 @@ from collections import defaultdict
                         {"start": "2024-07-24T10:00:00", "end": "2024-07-24T11:00:00"},
                         {"start": "2024-07-24T11:00:00", "end": "2024-07-24T11:30:00"},
                     ]
-                }
+                },
+                "migration_type" : "warm"
             },
             {
                 "status": {
@@ -64,7 +66,8 @@ from collections import defaultdict
                         {"start": "2024-07-24T10:00:00", "end": "2024-07-24T10:45:00"},
                         {"start": "2024-07-24T10:45:00", "end": "2024-07-24T11:30:00"},
                     ]
-                }
+                },
+                "migration_type" : "warm"
             },
             {
                 "status": {
@@ -72,7 +75,8 @@ from collections import defaultdict
                         "started": "2024-07-24T09:00:00",
                         "completed": "2024-07-24T12:00:00",
                     }
-                }
+                },
+                "migration_type" : "warm"
             },
             90.0,
         ),
@@ -142,6 +146,7 @@ def test_calculate_effective_migration_time(test_id, vm, entry, expected_time):
                 ],
                 "operatingSystem": "linux",
                 "name": "test_vm",
+                "migration_type": "cold",
             },
             {
                 "linux": {
@@ -149,19 +154,22 @@ def test_calculate_effective_migration_time(test_id, vm, entry, expected_time):
                     "disk_size": 1024,
                     "start_time": datetime(2024, 7, 25, 10, 0, 0),
                     "duration": 60.0,
+                    "migration_type": "cold",
+                    
                 }
             },
         ),
         # Edge cases: DiskTransfer phase missing
         (
             "edge_disktransfer_missing",
-            {"pipeline": [], "operatingSystem": "linux", "name": "test_vm"},
+            {"pipeline": [], "operatingSystem": "linux", "name": "test_vm", "migration_type": "cold",},
             {
                 "linux": {
                     "name": "test_vm",
                     "disk_size": 0,
                     "start_time": timedelta(seconds=0),
                     "duration": 0.0,
+                    "migration_type": "cold",
                 }
             },
         ),

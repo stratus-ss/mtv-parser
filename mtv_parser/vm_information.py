@@ -2,6 +2,13 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+def add_migration_attribute(vm):
+    warm_migration_present = vm.get("warm")
+    if warm_migration_present:
+        vm['migration_type'] = "warm"
+    else:
+        vm['migration_type'] = "cold"
+    return vm
 
 def calculate_effective_migration_time(vm: Dict[str, Any], entry: Dict[str, Any]) -> float:
     """
@@ -18,9 +25,9 @@ def calculate_effective_migration_time(vm: Dict[str, Any], entry: Dict[str, Any]
 
     # Find all precopies for this VM
     all_precopies = []
-    warm_migration_present = vm.get("warm")
+    warm_migration_present = vm.get("migration_type")
 
-    if warm_migration_present and "precopies" in vm["warm"]:
+    if warm_migration_present == "warm" and "precopies" in vm["warm"]:
         for precopy in vm["warm"]["precopies"]:
             if "start" in precopy and "end" in precopy:
                 start_time = datetime.fromisoformat(precopy["start"])
@@ -28,37 +35,41 @@ def calculate_effective_migration_time(vm: Dict[str, Any], entry: Dict[str, Any]
                 duration = (end_time - start_time).total_seconds() / 60  # Minutes
                 all_precopies.append({"start": start_time, "end": end_time, "duration": duration})
 
-    # Sort precopies by start time
-    all_precopies.sort(key=lambda x: x["start"])
+        # Sort precopies by start time
+        all_precopies.sort(key=lambda x: x["start"])
 
-    if not all_precopies:
-        # Fallback to regular migration times if no precopies
+        if not all_precopies:
+            # Fallback to regular migration times if no precopies
+            start = datetime.fromisoformat(entry["status"]["migration"]["started"])
+            end = datetime.fromisoformat(entry["status"]["migration"]["completed"])
+            return (end - start).total_seconds() / 60
+
+        # Get the start time from the first precopy
+        migration_start = all_precopies[0]["start"]
+
+        # Get the initial duration
+        initial_duration = all_precopies[0]["duration"]
+
+        # Find when the precopy duration drops significantly
+        migration_end = all_precopies[-1]["end"]  # Default to the last precopy
+
+        for i in range(1, len(all_precopies)):
+            current_duration = all_precopies[i]["duration"]
+
+            # If we find a significant drop from the initial duration
+            if current_duration < initial_duration * significant_drop_threshold:
+                migration_end = all_precopies[i]["end"]
+                break
+
+        # Calculate effective migration time in minutes
+        effective_minutes = (migration_end - migration_start).total_seconds() / 60
+
+        return effective_minutes
+    else:
+        # Handle cold migration
         start = datetime.fromisoformat(entry["status"]["migration"]["started"])
         end = datetime.fromisoformat(entry["status"]["migration"]["completed"])
         return (end - start).total_seconds() / 60
-
-    # Get the start time from the first precopy
-    migration_start = all_precopies[0]["start"]
-
-    # Get the initial duration
-    initial_duration = all_precopies[0]["duration"]
-
-    # Find when the precopy duration drops significantly
-    migration_end = all_precopies[-1]["end"]  # Default to the last precopy
-
-    for i in range(1, len(all_precopies)):
-        current_duration = all_precopies[i]["duration"]
-
-        # If we find a significant drop from the initial duration
-        if current_duration < initial_duration * significant_drop_threshold:
-            migration_end = all_precopies[i]["end"]
-            break
-
-    # Calculate effective migration time in minutes
-    effective_minutes = (migration_end - migration_start).total_seconds() / 60
-
-    return effective_minutes
-
 
 def extract_vm_information(
     vm: Dict[str, Any],
@@ -80,13 +91,13 @@ def extract_vm_information(
     # for vm in entry["status"]["migration"]["vms"]:
     os_name = vm.get("operatingSystem", "unknown")
     vm_name = vm.get("name")
-
     for phase in vm["pipeline"]:
-        if phase["name"] == "DiskTransfer" and "progress" in phase and "total" in phase["progress"]:
+        if (phase["name"] == "DiskTransfer" and "progress" in phase and "total" in phase["progress"]) or (phase["name"] == "DiskTransferV2v" and "progress" in phase and "total" in phase["progress"]):
             total_disk_size += phase["progress"]["total"]
             disk_transfer_start_time = datetime.fromisoformat(phase["started"])
             disk_transfer_end_time = datetime.fromisoformat(phase["completed"])
             total_disk_transfer_time = disk_transfer_end_time - disk_transfer_start_time
+            
     vm_information.update(
         {
             os_name: {
@@ -94,6 +105,7 @@ def extract_vm_information(
                 "disk_size": total_disk_size,
                 "start_time": disk_transfer_start_time,
                 "duration": total_disk_transfer_time.total_seconds() / 60,
+                "migration_type": vm['migration_type']
             }
         }
     )

@@ -51,3 +51,5 @@ classifiers = [
 ]
 dynamic = ["dependencies", "optional-dependencies"]
 
+[tool.setuptools]
+packages = ["mtv_parser"]

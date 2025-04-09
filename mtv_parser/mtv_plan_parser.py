@@ -3,8 +3,10 @@ from datetime import timedelta
 
 import yaml
 from clioutput import CLIOutput
+from migration_information import prepare_migration_information
 from visualization import plot_gantt_chart
-from vm_information import analyze_concurrent_migrations, calculate_effective_migration_time, extract_vm_information
+from vm_information import (add_migration_attribute, analyze_concurrent_migrations, calculate_effective_migration_time,
+                            extract_vm_information)
 
 
 def add_to_dict(vm_information: dict, dict_to_update: dict, effective_duration: float) -> list[dict]:
@@ -37,18 +39,18 @@ def main() -> None:
         total_disk_for_current_migration = 0
         if "completed" in entry["status"]["migration"].keys():
             for vms in entry["status"]["migration"]["vms"]:
-
+                new_vm_object = add_migration_attribute(vms)
                 # Calculate effective duration using the new function
-                effective_duration = calculate_effective_migration_time(vms, entry)
+                effective_duration = calculate_effective_migration_time(new_vm_object, entry)
 
                 # Calculate total disk size
-                vm_information = extract_vm_information(vms)
+                vm_information = extract_vm_information(new_vm_object)
                 total_disk_for_current_migration += next(iter(vm_information.values()))["disk_size"]
                 add_to_dict(vm_information, all_vms, effective_duration)
 
                 number_of_vms = len(entry["spec"]["vms"])
                 vms_failed = False
-                for vm in vms["conditions"]:
+                for vm in new_vm_object["conditions"]:
                     if vm["type"] != "Succeeded":
                         vms_failed = True
 
@@ -60,6 +62,7 @@ def main() -> None:
                 "total_disk_size": total_disk_for_current_migration,
                 "duration": effective_duration,
                 "start_time": next(iter(vm_information.values()))["start_time"],
+                "migration_type": next(iter(vm_information.values()))["migration_type"],
             }
 
             if vms_failed:
@@ -68,10 +71,12 @@ def main() -> None:
                 successful_migrations.append(migration_dict)
     plot_gantt_chart(all_vms)
     concurrency_data = analyze_concurrent_migrations(all_vms)
+    success_migration_report = prepare_migration_information(successful_migrations)
     if failed_migrations:
-        output.write(output.migration_output(failed_migrations, "failed"))
+        failed_migration_report = prepare_migration_information(failed_migrations)
+        output.write(output.migration_output(failed_migration_report, "failed"))
         output.write(("\n\n"))
-    output.write(output.migration_output(successful_migrations, "successful"))
+    output.write(output.migration_output(success_migration_report, "successful"))
     output.write(("\n\n"))
     output.write(output.operating_system_report(all_vms))
     output.write(("\n\n"))
