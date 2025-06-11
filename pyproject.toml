@@ -12,6 +12,7 @@ file = ["requirements.txt"]
 [tool.setuptools.dynamic.optional-dependencies.test]
 file = ["tests/requirements.txt"]
 
+
 [tool.flake8]
 max-line-length = 120
 max-complexity = 10

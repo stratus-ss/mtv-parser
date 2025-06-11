@@ -66,7 +66,7 @@ class CLIOutput:
             self._finalize()
             self._closed = True
 
-    def migration_output(self: t.Self,  migration_info: dict, type_of_migration: str) -> str:
+    def migration_output(self: t.Self, migration_info: dict, type_of_migration: str) -> str:
         report_header = "MIGRATION REPORT"
         sep = "=" * len(report_header)
         rows = []
@@ -74,28 +74,31 @@ class CLIOutput:
         rows.append([report_header])
         rows.append([sep])
         rows.append([""])
-        
-        header = f"The number of {type_of_migration} migrations:"
+
+        header = f"The number of {type_of_migration} migration plans:"
         sep = "-" * len(header)
-        
-        rows.append([header, migration_info['number_of_migrations']])
+
+        rows.append([header, migration_info["number_of_migrations"]])
         rows.append([sep])
-        
-        rows.append(["The number of vms:", migration_info['total_number_of_vms']])
-        rows.append(["Number of Cold Migrated VMs: ", migration_info['cold_migrated_vms']])
-        rows.append(["Number of Warm Migrated VMs: ", migration_info['warm_migrated_vms']])
-        rows.append(["Plan with longest runtime: ", migration_info['longest_plan']["name"]])
+
+        rows.append(["The number of vms:", migration_info["total_number_of_vms"]])
+        rows.append(["Number of Warm Migration Plans: ", migration_info["warm_migrations"]])
+        rows.append(["Number of Cold Migration Plans: ", migration_info["cold_migrations"]])
+        rows.append(["Number of Cold Migrated VMs: ", migration_info["cold_migrated_vms"]])
+        rows.append(["Number of Warm Migrated VMs: ", migration_info["warm_migrated_vms"]])
+        rows.append(["Plan with longest runtime: ", migration_info["longest_plan"]["name"]])
         rows.append(["Longest runtime in minutes: ", f"{migration_info['max_minutes']:.1f}"])
-        rows.append(["Total disk size in longest plan (GB): ", migration_info['longest_disk_size_gb']])
-        rows.append(["Transferred data per hour in longest plan (GB): ", f"{migration_info['longest_transfer_speed']:.1f}"])
+        rows.append(["Total disk size in longest plan (GB): ", migration_info["longest_disk_size_gb"]])
+        rows.append(
+            ["Transferred data per hour in longest plan (GB): ", f"{migration_info['longest_transfer_speed']:.1f}"]
+        )
         rows.append(["Shortest runtime in minutes: ", f"{migration_info['min_minutes']:.1f}"])
         rows.append(["Average runtime in minutes: ", f"{migration_info['average_time']:.1f}"])
         rows.append(["Average disk size (GB): ", f"{migration_info['average_disk_size_gb']:.1f}"])
         rows.append(["Average transfer per hour (GB): ", f"{migration_info['average_transfer_speed']:.1f}"])
-        rows.append(["Total Disk Size Migrated (GB): ", migration_info['total_disk_size_for_migration']])
-        rows.append(["Number of Warm Migrations: ", migration_info['warm_migrations']])
-        rows.append(["Number of Cold Migrations: ", migration_info['cold_migrations']])
-        
+        rows.append(["Total Disk Size Migrated (GB): ", migration_info["total_disk_size_for_migration"]])
+        rows.append(["Total Migration Hours (approx): ", migration_info["total_migration_hrs"]])
+
         return tabulate(rows, tablefmt="plain")
 
     def operating_system_report(self: t.Self, all_vms: dict) -> str:
@@ -140,7 +143,7 @@ class CLIOutput:
         rows.append(
             [
                 "Average concurrent VMs:",
-                concurrency_data.get("average_concurrent_vms", 0),
+                concurrency_data.get("overall_average_concurrent_vms", 0),
             ]
         )
 
@@ -165,13 +168,16 @@ class CLIOutput:
         if concurrency_data.get("hourly_concurrent_vms"):
             rows.append([""])
             rows.append([""])
-            hourly_header = "Hourly concurrent VMs:"
-            sep = "-" * len(hourly_header)
-            rows.append([hourly_header])
-            rows.append([sep])
-            for data in concurrency_data["hourly_concurrent_vms"]:
-                hour_str = data["hour"].strftime("%Y-%m-%d %H:%M")
-                rows.append([f" {hour_str}:", f"{data['vms']} VMs"])
-        rows.append([""])
-        rows.append([""])
+            plan_number = 1
+            for plan in concurrency_data["hourly_concurrent_vms"]:
+                hourly_header = f"Hourly concurrent VMs for Migration Window {plan_number}:"
+                sep = "-" * len(hourly_header)
+                rows.append([hourly_header])
+                rows.append([sep])
+                for data in plan:
+                    hour_str = data["hour"].strftime("%Y-%m-%d %H:%M")
+                    rows.append([f" {hour_str}:", f"{data['vms']} VMs"])
+                plan_number += 1
+                rows.append([""])
+                rows.append([""])
         return tabulate(rows, tablefmt="plain")

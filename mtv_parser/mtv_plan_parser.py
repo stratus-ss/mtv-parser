@@ -1,86 +1,110 @@
 from collections import defaultdict
 from datetime import timedelta
-
+import os
 import yaml
 from clioutput import CLIOutput
-from migration_information import prepare_migration_information
-from visualization import plot_gantt_chart
-from vm_information import (add_migration_attribute, analyze_concurrent_migrations, calculate_effective_migration_time,
-                            extract_vm_information)
+from migration_information import MigrationAnalyzer  # Import the MigrationAnalyzer class
 
 
-def add_to_dict(vm_information: dict, dict_to_update: dict, effective_duration: float) -> list[dict]:
-    dict_key = next(iter(vm_information.keys()))
-    transfer_start = vm_information[dict_key]["start_time"]
-    transfer_end_time = transfer_start + timedelta(minutes=effective_duration)
-    if not transfer_start or not effective_duration:
-        return
-    dict_to_update[dict_key].append(
-        {
-            "name": vm_information[dict_key]["name"],
-            "disk_size": vm_information[dict_key]["disk_size"],
-            "start_time": transfer_start,
-            "end_time": transfer_end_time,
-            "duration": effective_duration,
-        }
-    )
-    return dict_to_update
+def load_multiple_plans(directory: str) -> dict:
+    """Load and merge multiple MTV plan files into a single data structure."""
+    merged_data = {"items": []}
+
+    yaml_files = [
+        f for f in os.listdir(directory) if f.endswith((".yaml", ".yml")) and os.path.isfile(os.path.join(directory, f))
+    ]
+
+    for file_name in yaml_files:
+        file_path = os.path.join(directory, file_name)
+        with open(file_path, "r") as yaml_file:
+            plan_data = yaml.safe_load(yaml_file)
+            if plan_data and "items" in plan_data:
+                merged_data["items"].extend(plan_data["items"])
+
+    return merged_data
 
 
 def main() -> None:
-    with open("examples/vm-plans-sample2.yaml", "r") as yaml_file:
-        mtv_plan_data = yaml.safe_load(yaml_file)
+    # Load YAML data
 
+    multiple_dir = "./plans/multiple"
+    single_file = "./plans/single/vm-plan-sample.yaml"
+
+    yaml_files = [
+        f
+        for f in os.listdir(multiple_dir)
+        if f.endswith((".yaml", ".yml")) and os.path.isfile(os.path.join(multiple_dir, f))
+    ]
+
+    if len(yaml_files) > 1:
+        # Process multiple files as merged dataset
+        mtv_plan_data = load_multiple_plans(multiple_dir)
+    elif len(yaml_files) == 1:
+        # Single file in multiple directory
+        with open(os.path.join(multiple_dir, yaml_files[0]), "r") as yaml_file:
+            mtv_plan_data = yaml.safe_load(yaml_file)
+    else:
+        # Fallback to sample file
+        with open(single_file, "r") as yaml_file:
+            mtv_plan_data = yaml.safe_load(yaml_file)
+
+    # Initialize CLI output and MigrationAnalyzer
     output = CLIOutput()
-    successful_migrations = []
-    failed_migrations = []
+    migration_analyzer = MigrationAnalyzer()
+
+    # Initialize dictionary to hold VM migration data
     all_vms = defaultdict(list)
-    for entry in mtv_plan_data["items"]:
-        total_disk_for_current_migration = 0
-        if "completed" in entry["status"]["migration"].keys():
-            for vms in entry["status"]["migration"]["vms"]:
-                new_vm_object = add_migration_attribute(vms)
-                # Calculate effective duration using the new function
-                effective_duration = calculate_effective_migration_time(new_vm_object, entry)
 
-                # Calculate total disk size
-                vm_information = extract_vm_information(new_vm_object)
-                total_disk_for_current_migration += next(iter(vm_information.values()))["disk_size"]
-                add_to_dict(vm_information, all_vms, effective_duration)
+    # Process migration success info
+    successful_migrations, failed_migrations, migration_window_for_plan = migration_analyzer.get_migration_success_info(
+        mtv_plan_data, all_vms
+    )
 
-                number_of_vms = len(entry["spec"]["vms"])
-                vms_failed = False
-                for vm in new_vm_object["conditions"]:
-                    if vm["type"] != "Succeeded":
-                        vms_failed = True
+    # Ensure migration window has all hours filled
+    current_hour = min(migration_window_for_plan.keys()).replace(minute=0, second=0, microsecond=0)
+    end_time = max(migration_window_for_plan.keys()).replace(minute=0, second=0, microsecond=0)
 
-            migration_dict = {
-                "name": entry["metadata"]["name"],
-                "total_duration_mins": effective_duration,
-                "vms": number_of_vms,
-                "vms_failed": f"{vms_failed}",
-                "total_disk_size": total_disk_for_current_migration,
-                "duration": effective_duration,
-                "start_time": next(iter(vm_information.values()))["start_time"],
-                "migration_type": next(iter(vm_information.values()))["migration_type"],
-            }
+    while current_hour <= end_time:
+        if current_hour not in migration_window_for_plan.keys():
+            migration_window_for_plan[current_hour] = 0
+        current_hour += timedelta(hours=1)
 
-            if vms_failed:
-                failed_migrations.append(migration_dict)
-            else:
-                successful_migrations.append(migration_dict)
-    plot_gantt_chart(all_vms)
-    concurrency_data = analyze_concurrent_migrations(all_vms)
-    success_migration_report = prepare_migration_information(successful_migrations)
+    # Sort migration window by time
+    sorted_migration_window_for_plan = dict(sorted(migration_window_for_plan.items()))
+
+    # Find peak time and max concurrent migrations
+    peak_time = ""
+    max_concurrent = 0
+    for entry in migration_window_for_plan.keys():
+        if migration_window_for_plan[entry] > max_concurrent:
+            max_concurrent = migration_window_for_plan[entry]
+            peak_time = entry
+
+    # Analyze concurrency
+    migration_window_list = migration_analyzer.find_deployment_windows(sorted_migration_window_for_plan)
+    concurrency_data = migration_analyzer.analyze_concurrent_migrations(
+        migration_window_list, max_concurrent, peak_time
+    )
+
+    # Calculate active migration hours
+    active_migration_hours = migration_analyzer.calculate_active_migration_hours(concurrency_data)
+
+    # Prepare migration reports
+    success_migration_report = migration_analyzer.prepare_migration_information(
+        successful_migrations, active_migration_hours
+    )
+
     if failed_migrations:
-        failed_migration_report = prepare_migration_information(failed_migrations)
+        failed_migration_report = migration_analyzer.prepare_migration_information(failed_migrations)
         output.write(output.migration_output(failed_migration_report, "failed"))
         output.write(("\n\n"))
+
     output.write(output.migration_output(success_migration_report, "successful"))
     output.write(("\n\n"))
     output.write(output.operating_system_report(all_vms))
     output.write(("\n\n"))
     output.write(output.generate_concurrency_report(concurrency_data))
+
     output.close()
 
 
