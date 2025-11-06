@@ -95,7 +95,7 @@ class CLIOutput:
         rows.append(["Shortest runtime in minutes: ", f"{migration_info['min_minutes']:.1f}"])
         rows.append(["Average runtime in minutes: ", f"{migration_info['average_time']:.1f}"])
         rows.append(["Average disk size (GB): ", f"{migration_info['average_disk_size_gb']:.1f}"])
-        rows.append(["Average transfer per hour (GB): ", f"{migration_info['average_transfer_speed']:.1f}"])
+        rows.append(["Aggregate transfer per hour (GB): ", f"{migration_info['average_transfer_speed']:.1f}"])
         rows.append(["Total Disk Size Migrated (GB): ", migration_info["total_disk_size_for_migration"]])
         rows.append(["Total Migration Hours (approx): ", migration_info["total_migration_hrs"]])
 
