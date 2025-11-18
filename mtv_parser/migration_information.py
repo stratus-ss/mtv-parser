@@ -121,25 +121,32 @@ class MigrationAnalyzer:
         average_per_hour = round((total_count / number_of_hours), 1)
         return math.ceil(average_per_hour)
 
-    def calculate_active_migration_hours(self: t.Self, concurrency_data: dict) -> int:
-        """
-        Calculate the number of hours a migration was active.
+    def calculate_active_migration_hours(self: t.Self, mtv_plan_data: dict) -> float:
+        """Calculate total active migration time by summing all plan durations.
+
+        This method sums the actual time each migration plan was actively transferring data.
+        It does this by extracting start and completion timestamps from each migration plan's
+        status.migration section.
 
         Args:
-            concurrency_data (dict): A dictionary containing concurrency data.
+            mtv_plan_data (dict): The full migration plan data dict.
 
         Returns:
-            int: The number of hours the migration was active.
+            float: Total hours of active data transfer across all migration plans.
         """
-        # Extract all hours from concurrency data
-        all_hours = set()
-        for plan in concurrency_data["hourly_concurrent_vms"]:
-            for entry in plan:
-                all_hours.add(entry["hour"])
+        total_seconds = 0
 
-        # Count the number of unique hours
-        active_hours = len(all_hours)
-        return active_hours
+        for entry in mtv_plan_data["items"]:
+            migration_status = entry.get("status", {}).get("migration", {})
+
+            if "started" in migration_status and "completed" in migration_status:
+                start = datetime.fromisoformat(migration_status["started"].replace("Z", "+00:00"))
+                end = datetime.fromisoformat(migration_status["completed"].replace("Z", "+00:00"))
+                duration = (end - start).total_seconds()
+                total_seconds += duration
+
+        total_hours = total_seconds / 3600
+        return round(total_hours, 2)
 
     def calculate_effective_migration_time(self: t.Self, vm: Dict[str, Any], entry: Dict[str, Any]) -> float:
         """Calculate the effective migration time based on precopy duration drops.

@@ -87,7 +87,7 @@ def main() -> None:
     )
 
     # Calculate active migration hours
-    active_migration_hours = migration_analyzer.calculate_active_migration_hours(concurrency_data)
+    active_migration_hours = migration_analyzer.calculate_active_migration_hours(mtv_plan_data)
 
     # Prepare migration reports
     success_migration_report = migration_analyzer.prepare_migration_information(
