@@ -83,17 +83,23 @@ class MigrationAnalyzer:
         """
         migration_plan_hourly_concurrent_vms = []
         avg_concurrent_vms_per_plan = []
+        
+        # Track totals for weighted average calculation
+        total_vm_hours = 0
+        total_hours = 0
 
         # Format hourly data for report
         for migration_plan in migration_plan_by_hour:
             migration_plan_hourly_concurrent_vms.append(
                 [{"hour": hour, "vms": count} for hour, count in sorted(migration_plan.items())]
             )
-            avg_concurrent_vms_per_plan.append([self.get_avg_concurrent_count(migration_plan)])
+            plan_avg = self.get_avg_concurrent_count(migration_plan)
+            avg_concurrent_vms_per_plan.append([plan_avg])
+            
+            total_vm_hours += sum(migration_plan.values())
+            total_hours += len(migration_plan)
 
-        overall_average_concurrent_vms = sum(num for sublist in avg_concurrent_vms_per_plan for num in sublist) / len(
-            avg_concurrent_vms_per_plan
-        )
+        overall_average_concurrent_vms = total_vm_hours / total_hours if total_hours > 0 else 0
 
         return {
             "max_concurrent_total": max_concurrent_total,
@@ -103,21 +109,30 @@ class MigrationAnalyzer:
             "hourly_concurrent_vms": migration_plan_hourly_concurrent_vms,
         }
 
-    def get_avg_concurrent_count(self: t.Self, hourly_counts: list[dict]) -> int:
+    def get_avg_concurrent_count(self: t.Self, hourly_counts: dict) -> int:
         """Calculate the average concurrent count from hourly counts.
 
-        This function takes a list of hourly counts and calculates the average
-        concurrent count, rounding up to the nearest integer.
+        This function takes a dictionary of hourly counts and calculates the average
+        concurrent count, excluding hours with zero VMs (only counting active migration hours).
+        The result is rounded up to the nearest integer.
 
         Args:
-            hourly_counts (list[dict]): A list of dictionaries, where each dictionary represents
-            an hour and its corresponding count.
+            hourly_counts (dict): A dictionary with datetime keys and VM counts as values.
 
         Returns:
-            float: The average concurrent count, rounded up to the nearest integer.
+            int: The average concurrent count for active hours, rounded up to the nearest integer.
         """
-        number_of_hours = len(hourly_counts)
-        total_count = sum(hourly_counts.values())
+        # Only count hours with active migrations
+        active_hours = {}
+        for hour, vm_count in hourly_counts.items():
+            if vm_count > 0:
+                active_hours[hour] = vm_count
+        
+        if not active_hours:
+            return 0
+        
+        number_of_hours = len(active_hours)
+        total_count = sum(active_hours.values())
         average_per_hour = round((total_count / number_of_hours), 1)
         return math.ceil(average_per_hour)
 

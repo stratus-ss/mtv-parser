@@ -7,7 +7,12 @@ from migration_information import MigrationAnalyzer  # Import the MigrationAnaly
 
 
 def load_multiple_plans(directory: str) -> dict:
-    """Load and merge multiple MTV plan files into a single data structure."""
+    """Load and merge multiple MTV plan files into a single data structure.
+    
+    Handles both:
+    - Individual Plan objects (single plan per file)
+    - List structures with "items" key (multiple plans in one file)
+    """
     merged_data = {"items": []}
 
     yaml_files = [
@@ -18,8 +23,15 @@ def load_multiple_plans(directory: str) -> dict:
         file_path = os.path.join(directory, file_name)
         with open(file_path, "r") as yaml_file:
             plan_data = yaml.safe_load(yaml_file)
-            if plan_data and "items" in plan_data:
+            if not plan_data:
+                continue
+                
+            # If the YAML contains a list with "items" key, extend with those items
+            if "items" in plan_data:
                 merged_data["items"].extend(plan_data["items"])
+            # Otherwise, treat the entire object as a single plan item
+            elif "kind" in plan_data and plan_data["kind"] == "Plan":
+                merged_data["items"].append(plan_data)
 
     return merged_data
 
@@ -60,6 +72,13 @@ def main() -> None:
         mtv_plan_data, all_vms
     )
 
+    
+    # Check if migration_window_for_plan has data
+    if not migration_window_for_plan:
+        output.write("No migration data available. Please ensure your YAML files contain completed migrations.\n")
+        output.close()
+        return
+    
     # Ensure migration window has all hours filled
     current_hour = min(migration_window_for_plan.keys()).replace(minute=0, second=0, microsecond=0)
     end_time = max(migration_window_for_plan.keys()).replace(minute=0, second=0, microsecond=0)
