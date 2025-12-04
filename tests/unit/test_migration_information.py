@@ -169,6 +169,7 @@ def test_add_migration_attribute(migration_analyzer, test_id, vm, expected_resul
                     "start_time": datetime.datetime(2024, 7, 25, 10, 0, 0),
                     "end_time": datetime.datetime(2024, 7, 25, 11, 0, 0),
                     "duration": 60.0,
+                    "succeeded": True,
                 }]
             }),
         ),
@@ -483,21 +484,28 @@ def test_prepare_migration_information(migration_analyzer, test_id, migrations, 
 
 # Test for calculate_active_migration_hours
 def test_calculate_active_migration_hours(migration_analyzer):
-    concurrency_data = {
-        'hourly_concurrent_vms': [
-            [
-                {'hour': datetime.datetime(2024, 7, 29, 10, 0, 0), 'vms': 5},
-                {'hour': datetime.datetime(2024, 7, 29, 11, 0, 0), 'vms': 3},
-                {'hour': datetime.datetime(2024, 7, 29, 12, 0, 0), 'vms': 2},
-            ],
-            [
-                {'hour': datetime.datetime(2024, 7, 30, 10, 0, 0), 'vms': 1},
-                {'hour': datetime.datetime(2024, 7, 30, 11, 0, 0), 'vms': 4},
-            ]
+    mtv_plan_data = {
+        'items': [
+            {
+                'status': {
+                    'migration': {
+                        'started': '2024-07-29T10:00:00Z',
+                        'completed': '2024-07-29T12:00:00Z',
+                    }
+                }
+            },
+            {
+                'status': {
+                    'migration': {
+                        'started': '2024-07-30T10:00:00Z',
+                        'completed': '2024-07-30T13:00:00Z',
+                    }
+                }
+            }
         ]
     }
-    expected_hours = 5  # Unique hours across all plans
-    actual_hours = migration_analyzer.calculate_active_migration_hours(concurrency_data)
+    expected_hours = 5.0  # 2 hours + 3 hours = 5 hours total
+    actual_hours = migration_analyzer.calculate_active_migration_hours(mtv_plan_data)
     assert actual_hours == expected_hours
 
 # Complex test data for migration_success_info
@@ -565,3 +573,236 @@ def test_get_migration_success_info(migration_analyzer):
     assert len(migration_window) >= 3  # Should have at least 3 hours
     assert successful_migrations[0]["migration_type"] == "warm"
     assert failed_migrations[0]["migration_type"] == "cold"
+
+# Tests for _filter_successful_vms
+@pytest.mark.parametrize(
+    "test_id, all_vms, expected_count, expected_names",
+    [
+        (
+            "mixed_success_failure",
+            {
+                "linux": [
+                    {
+                        "name": "vm1",
+                        "disk_size": 1024,
+                        "start_time": datetime.datetime(2024, 7, 25, 10, 0, 0),
+                        "duration": 60.0,
+                        "succeeded": True,
+                    },
+                    {
+                        "name": "vm2",
+                        "disk_size": 2048,
+                        "start_time": datetime.datetime(2024, 7, 25, 11, 0, 0),
+                        "duration": 30.0,
+                        "succeeded": False,
+                    },
+                ],
+                "windows": [
+                    {
+                        "name": "vm3",
+                        "disk_size": 4096,
+                        "start_time": datetime.datetime(2024, 7, 25, 12, 0, 0),
+                        "duration": 45.0,
+                        "succeeded": True,
+                    }
+                ]
+            },
+            2,
+            ["vm1", "vm3"],
+        ),
+        (
+            "all_successful",
+            {
+                "linux": [
+                    {
+                        "name": "vm1",
+                        "disk_size": 1024,
+                        "start_time": datetime.datetime(2024, 7, 25, 10, 0, 0),
+                        "duration": 60.0,
+                        "succeeded": True,
+                    }
+                ]
+            },
+            1,
+            ["vm1"],
+        ),
+        (
+            "empty_dict",
+            {},
+            0,
+            [],
+        ),
+    ],
+)
+def test_filter_successful_vms(migration_analyzer, test_id, all_vms, expected_count, expected_names):
+    filtered = migration_analyzer._filter_successful_vms(all_vms)
+    
+    assert len(filtered) == expected_count
+    if expected_count > 0:
+        assert all(vm["succeeded"] for vm in filtered)
+        actual_names = [vm["name"] for vm in filtered]
+        assert actual_names == expected_names
+
+
+# Tests for _calculate_vm_transfer_speed
+@pytest.mark.parametrize(
+    "test_id, vm, expected_speed",
+    [
+        (
+            "standard_transfer",
+            {"disk_size": 3072, "duration": 60.0},
+            3.0,
+        ),
+        (
+            "fast_transfer",
+            {"disk_size": 10240, "duration": 30.0},
+            20.0,
+        ),
+        (
+            "zero_duration",
+            {"disk_size": 1024, "duration": 0.0},
+            0.0,
+        ),
+    ],
+)
+def test_calculate_vm_transfer_speed(migration_analyzer, test_id, vm, expected_speed):
+    speed = migration_analyzer._calculate_vm_transfer_speed(vm)
+    assert abs(speed - expected_speed) < 0.01  # Allow small floating point differences
+
+
+# Tests for _calculate_vm_totals
+@pytest.mark.parametrize(
+    "test_id, vms, expected_result",
+    [
+        (
+            "two_vms",
+            [
+                {"disk_size": 1024, "duration": 60.0},
+                {"disk_size": 2048, "duration": 30.0},
+            ],
+            (2, 3.0, 90.0),
+        ),
+        (
+            "single_vm",
+            [
+                {"disk_size": 5120, "duration": 120.0},
+            ],
+            (1, 5.0, 120.0),
+        ),
+    ],
+)
+def test_calculate_vm_totals(migration_analyzer, test_id, vms, expected_result):
+    total_vms, total_disk_gb, total_mins = migration_analyzer._calculate_vm_totals(vms)
+    
+    expected_vms, expected_disk, expected_mins = expected_result
+    assert total_vms == expected_vms
+    assert abs(total_disk_gb - expected_disk) < 0.01
+    assert abs(total_mins - expected_mins) < 0.01
+
+
+# Tests for prepare_vm_inform
+@pytest.mark.parametrize(
+    "test_id, all_vms, concurrent_hours, expected_result",
+    [
+        (
+            "two_vms_sequential",
+            {
+                "linux": [
+                    {
+                        "name": "vm1",
+                        "disk_size": 2048,
+                        "start_time": datetime.datetime(2024, 7, 25, 10, 0, 0),
+                        "duration": 60.0,
+                        "succeeded": True,
+                    },
+                    {
+                        "name": "vm2",
+                        "disk_size": 4096,
+                        "start_time": datetime.datetime(2024, 7, 25, 11, 0, 0),
+                        "duration": 120.0,
+                        "succeeded": True,
+                    },
+                ]
+            },
+            2.0,
+            {
+                "total_vms": 2,
+                "max_minutes": 120.0,
+                "min_minutes": 60.0,
+                "longest_vm_name": "vm2",
+                "shortest_vm_name": "vm1",
+                "largest_vm_name": "vm2",
+                "largest_vm_disk_gb": 4.0,
+                "smallest_vm_name": "vm1",
+                "smallest_vm_disk_gb": 2.0,
+                "average_time_mins": 90.0,
+                "total_disk_size_gb": 6.0,
+                "total_migration_hours": 2.0,
+                "aggregate_speed_gb_per_hr": 3.0,
+            },
+        ),
+        (
+            "two_vms_concurrent_hours",
+            {
+                "linux": [
+                    {
+                        "name": "vm1",
+                        "disk_size": 10240,
+                        "start_time": datetime.datetime(2024, 7, 25, 10, 0, 0),
+                        "duration": 120.0,
+                        "succeeded": True,
+                    },
+                    {
+                        "name": "vm2",
+                        "disk_size": 10240,
+                        "start_time": datetime.datetime(2024, 7, 25, 10, 0, 0),
+                        "duration": 120.0,
+                        "succeeded": True,
+                    },
+                ]
+            },
+            2.0,
+            {
+                "total_vms": 2,
+                "total_disk_size_gb": 20.0,
+                "total_migration_hours": 2.0,
+                "aggregate_speed_gb_per_hr": 10.0,
+            },
+        ),
+        (
+            "empty_all_vms",
+            {},
+            1.0,
+            {},
+        ),
+        (
+            "only_failed_vms",
+            {
+                "linux": [
+                    {
+                        "name": "vm1",
+                        "disk_size": 2048,
+                        "start_time": datetime.datetime(2024, 7, 25, 10, 0, 0),
+                        "duration": 60.0,
+                        "succeeded": False,
+                    }
+                ]
+            },
+            1.0,
+            {},
+        ),
+    ],
+)
+def test_prepare_vm_inform(migration_analyzer, test_id, all_vms, concurrent_hours, expected_result):
+    vm_info = migration_analyzer.prepare_vm_inform(all_vms, concurrent_hours)
+    
+    if not expected_result:
+        assert vm_info == {}
+    else:
+        for key, expected_value in expected_result.items():
+            assert key in vm_info, f"Missing key: {key}"
+            actual_value = vm_info[key]
+            if isinstance(expected_value, float):
+                assert abs(actual_value - expected_value) < 0.01, f"{key}: expected {expected_value}, got {actual_value}"
+            else:
+                assert actual_value == expected_value, f"{key}: expected {expected_value}, got {actual_value}"

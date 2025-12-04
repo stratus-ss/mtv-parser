@@ -26,7 +26,13 @@ class MigrationAnalyzer:
             vm["migration_type"] = "cold"
         return vm
 
-    def add_to_dict(self: t.Self, vm_information: dict, dict_to_update: dict, effective_duration: float) -> list[dict]:
+    def add_to_dict(
+        self: t.Self,
+        vm_information: dict,
+        dict_to_update: dict,
+        effective_duration: float,
+        succeeded: bool = True,
+    ) -> list[dict]:
         """Add VM information to a dictionary.
 
         This function takes VM information, calculates the transfer end time, and appends
@@ -37,6 +43,7 @@ class MigrationAnalyzer:
             vm_information (dict): A dictionary containing VM information.
             dict_to_update (dict): The dictionary to update with the VM details.
             effective_duration (float): The effective duration of the migration.
+            succeeded (bool): Whether the VM migration succeeded. Defaults to True.
 
         Returns:
             list[dict]: The updated dictionary with the added VM information.
@@ -55,6 +62,7 @@ class MigrationAnalyzer:
                 "start_time": transfer_start,
                 "end_time": transfer_end_time,
                 "duration": effective_duration,
+                "succeeded": succeeded,
             }
         )
 
@@ -342,6 +350,9 @@ class MigrationAnalyzer:
         effective_duration: float,
         total_disk_size: int,
         vm_names: list[str],
+        failed_vm_count: int = 0,
+        failed_vm_names: list[str] = None,
+        processed_vm_count: int = 0,
     ) -> dict:
         """Create a dictionary summarizing migration details for a migration entry.
 
@@ -354,21 +365,30 @@ class MigrationAnalyzer:
             effective_duration (float): The effective duration of the migration in minutes.
             total_disk_size (int): The total disk size migrated.
             vm_names (list[str]): The names of the VMs involved in the migration.
+            failed_vm_count (int): The number of VMs that failed in this plan.
+            failed_vm_names (list[str]): The names of VMs that failed. Defaults to None.
+            processed_vm_count (int): The number of VMs that actually migrated data.
 
         Returns:
             dict: A dictionary summarizing the migration details.
         """
+        if failed_vm_names is None:
+            failed_vm_names = []
+            
         vm_data = next(iter(vm_information.values()))
         return {
             "name": entry["metadata"]["name"],
             "total_duration_mins": effective_duration,
             "vms": len(entry["spec"]["vms"]),
+            "vms_migrated": processed_vm_count,  # VMs that actually migrated data
             "vms_failed": str(
                 any(
                     condition["type"] != "Succeeded"
                     for condition in entry["status"]["migration"]["vms"][0]["conditions"]
                 )
             ),
+            "failed_vm_count": failed_vm_count,
+            "failed_vm_names": failed_vm_names,
             "total_disk_size": total_disk_size,
             "duration": effective_duration,
             "start_time": vm_data["start_time"],
@@ -391,6 +411,8 @@ class MigrationAnalyzer:
         bool,  # vms_failed
         dict,  # migration_window_for_plan
         int,  # processed_vm_count
+        int,  # failed_vm_count
+        list,  # failed_vm_names
     ]:
         total_disk_size = 0
         vm_names = []
@@ -398,6 +420,8 @@ class MigrationAnalyzer:
         vm_information = None  # To store the last VM's information
         effective_duration = 0  # To store the last VM's duration
         processed_vm_count = 0
+        failed_vm_count = 0
+        failed_vm_names = []
 
         # Process all VMs for this migration entry
         for vm in entry["status"]["migration"]["vms"]:
@@ -408,18 +432,27 @@ class MigrationAnalyzer:
             vm_information = self.extract_vm_information(new_vm_object, effective_duration)
             os_type = next(iter(vm_information))
             vm_data = vm_information[os_type]
-            # Only count VMs that have valid data
+            
+
+            vm_succeeded = True
+            for condition in new_vm_object["conditions"]:
+                if condition["type"] == "Failed":
+                    vm_succeeded = False
+                    vms_failed = True
+                    break
+            
+            # Track failed VMs regardless of whether they have valid migration data
+            # (VMs can fail before DiskTransfer phase starts)
+            if not vm_succeeded:
+                failed_vm_count += 1
+                failed_vm_names.append(new_vm_object["name"])
+            
+            # Only count VMs that have valid data for statistics
             if vm_data["start_time"] and effective_duration:
                 processed_vm_count += 1
                 total_disk_size += vm_data["disk_size"]
-                # Update all_vms with VM information
-                self.add_to_dict(vm_information, all_vms, effective_duration)
-
-            # Check for VM failure
-            for condition in new_vm_object["conditions"]:
-                if condition["type"] != "Succeeded":
-                    vms_failed = True
-                    break
+                # Update all_vms with VM information including success status
+                self.add_to_dict(vm_information, all_vms, effective_duration, vm_succeeded)
 
             # Update migration window information
             if vm_data.get("migration_window"):
@@ -434,6 +467,8 @@ class MigrationAnalyzer:
             vms_failed,
             migration_window_for_plan,
             processed_vm_count,
+            failed_vm_count,
+            failed_vm_names,
         )
 
     def get_migration_success_info(self: t.Self, mtv_plan_data: dict, all_vms: dict) -> tuple[list, list, dict]:
@@ -470,15 +505,17 @@ class MigrationAnalyzer:
                 vms_failed,
                 migration_window_for_plan,
                 processed_vm_count,
+                failed_vm_count,
+                failed_vm_names,
             ) = self._process_vm_entries(entry, all_vms, migration_window_for_plan)
 
             # Skip if no VMs were processed
             if not vm_information or processed_vm_count == 0:
                 continue
 
-            # Create migration dictionary using processed VM count
             migration_dict = self._create_migration_dict(
-                entry, vm_information, effective_duration, total_disk_size, vm_names
+                entry, vm_information, effective_duration, total_disk_size, vm_names, 
+                failed_vm_count, failed_vm_names, processed_vm_count
             )
 
             # Categorize migration based on success/failure
@@ -533,10 +570,11 @@ class MigrationAnalyzer:
 
         average_time_mins = sum(item["total_duration_mins"] for item in migrations) / number_of_migrations
         total_number_of_vms = sum(item["vms"] for item in migrations)
+        total_vms_migrated = sum(item.get("vms_migrated", item["vms"]) for item in migrations)
         total_disk_size_for_migration = sum(item["total_disk_size"] for item in migrations) / 1024
         total_migration_hrs = active_migration_hours if active_migration_hours is not None else 0
 
-        average_disk_size_gb = total_disk_size_for_migration / number_of_migrations
+        average_disk_size_gb = total_disk_size_for_migration / total_vms_migrated if total_vms_migrated > 0 else 0
         # Calculate aggregate transfer speed: total GB ÷ total active hours
         average_transfer_speed = (
             round(total_disk_size_for_migration / total_migration_hrs, 2) if total_migration_hrs > 0 else 0
@@ -553,6 +591,8 @@ class MigrationAnalyzer:
         cold_migrated_vms = 0
         warm_migrations = 0
         warm_migrated_vms = 0
+        total_failed_vms = 0
+        all_failed_vm_names = []
 
         for item in migrations:
             if item["migration_type"] == "cold":
@@ -561,6 +601,10 @@ class MigrationAnalyzer:
             if item["migration_type"] == "warm":
                 warm_migrations += 1
                 warm_migrated_vms += item["vms"]
+            
+            # Aggregate failed VM count and names
+            total_failed_vms += item.get("failed_vm_count", 0)
+            all_failed_vm_names.extend(item.get("failed_vm_names", []))
 
         # Populate temp_dict with the calculated values
         temp_dict["average_disk_size_gb"] = average_disk_size_gb
@@ -577,11 +621,129 @@ class MigrationAnalyzer:
         temp_dict["total_disk_size_for_migration"] = total_disk_size_for_migration
         temp_dict["total_migration_hrs"] = total_migration_hrs
         temp_dict["total_number_of_vms"] = total_number_of_vms
+        temp_dict["total_vms_migrated"] = total_vms_migrated  # VMs that actually transferred data
+        temp_dict["total_failed_vms"] = total_failed_vms
+        temp_dict["failed_vm_names"] = all_failed_vm_names
         temp_dict["warm_migrated_vms"] = warm_migrated_vms
         temp_dict["warm_migrations"] = warm_migrations
 
         # Convert defaultdict back to regular dict before returning
         return dict(temp_dict)
+
+    def _filter_successful_vms(
+        self: t.Self,
+        all_vms: Dict[str, List[Dict[str, Any]]],
+    ) -> List[Dict[str, Any]]:
+        """Filter and return only successfully migrated VMs with valid data.
+
+        Args:
+            all_vms (Dict[str, List[Dict[str, Any]]]): Dictionary of VMs by OS type.
+
+        Returns:
+            List[Dict[str, Any]]: List of successfully migrated VMs with valid data.
+        """
+        successful_vms = []
+        for _, vm_list in all_vms.items():
+            for vm in vm_list:
+                if not vm.get("succeeded", True):
+                    continue
+                if not vm.get("start_time") or not vm.get("duration"):
+                    continue
+                successful_vms.append(vm)
+        return successful_vms
+
+    def _calculate_vm_transfer_speed(self: t.Self, vm: Dict[str, Any]) -> float:
+        """Calculate transfer speed for a single VM in GB/hour.
+
+        Args:
+            vm (Dict[str, Any]): VM dictionary with disk_size and duration.
+
+        Returns:
+            float: Transfer speed in GB/hour.
+        """
+        hours = vm["duration"] / 60.0
+        if hours == 0:
+            return 0.0
+        return (vm["disk_size"] / 1024) / hours
+
+    def _calculate_vm_totals(
+        self: t.Self,
+        vms: List[Dict[str, Any]],
+    ) -> tuple[int, float, float]:
+        """Calculate total metrics for a list of VMs.
+
+        Args:
+            vms (List[Dict[str, Any]]): List of VM dictionaries.
+
+        Returns:
+            tuple: (total_vms, total_disk_gb, total_mins, total_hours)
+        """
+        total_vms = len(vms)
+        total_disk_gb = sum(vm["disk_size"] / 1024 for vm in vms)
+        total_mins = sum(vm["duration"] for vm in vms)
+        return total_vms, total_disk_gb, total_mins
+
+    def prepare_vm_inform(
+        self: t.Self,
+        all_vms: Dict[str, List[Dict[str, Any]]],
+        concurrent_migration_hours: float = 0,
+    ) -> Dict[str, Any]:
+        """Calculate VM-level stats for successfully migrated VMs.
+
+        This method computes aggregate stats at the VM level using only 
+        VMs that completed successfully.
+
+        Args:
+            all_vms (Dict[str, List[Dict[str, Any]]]): Dictionary of all VMs by OS type.
+            concurrent_migration_hours (float): Actual wall-clock hours when migrations ran
+                (concurrent time, not sum of VM durations). Defaults to 0.
+
+        Returns:
+            Dict[str, Any]: Dictionary containing VM-level statistics or empty dict if no data.
+        """
+        vms = self._filter_successful_vms(all_vms)
+
+        if not vms:
+            return {}
+
+        total_vms, total_disk_gb, total_mins = self._calculate_vm_totals(vms)
+
+        # Find longest and shortest VMs
+        longest_vm = max(vms, key=lambda v: v["duration"])
+        shortest_vm = min(vms, key=lambda v: v["duration"])
+        largest_vm = max(vms, key=lambda v: v["disk_size"])
+        smallest_vm = min(vms, key=lambda v: v["disk_size"])
+
+        # Calculate speeds and averages
+        # Use concurrent hours for aggregate speed (not sum of VM durations)
+        longest_vm_speed = self._calculate_vm_transfer_speed(longest_vm)
+        avg_runtime_mins = round(total_mins / total_vms, 1)
+        avg_disk_gb = round(total_disk_gb / total_vms, 1)
+        
+        # Aggregate speed uses CONCURRENT migration hours (wall-clock time)
+        aggregate_speed_gb_per_hr = (
+            round(total_disk_gb / concurrent_migration_hours, 2) 
+            if concurrent_migration_hours > 0 
+            else 0.0
+        )
+
+        return {
+            "total_vms": total_vms,
+            "max_minutes": round(longest_vm["duration"], 1),
+            "longest_vm_name": longest_vm["name"],
+            "largest_vm_name": largest_vm["name"],
+            "largest_vm_disk_gb": round(largest_vm["disk_size"] / 1024, 1),
+            "smallest_vm_name": smallest_vm["name"],
+            "smallest_vm_disk_gb": round(smallest_vm["disk_size"] / 1024, 1),
+            "longest_vm_transferspeed": round(longest_vm_speed, 1),
+            "min_minutes": round(shortest_vm["duration"], 1),
+            "shortest_vm_name": shortest_vm["name"],
+            "average_time_mins": avg_runtime_mins,
+            "average_disk_size_gb": avg_disk_gb,
+            "aggregate_speed_gb_per_hr": aggregate_speed_gb_per_hr,
+            "total_disk_size_gb": round(total_disk_gb, 1),
+            "total_migration_hours": concurrent_migration_hours,
+        }
 
     def sort_migration_events(
         self: t.Self,

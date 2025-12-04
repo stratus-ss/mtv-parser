@@ -114,12 +114,27 @@ def main() -> None:
     )
 
     if failed_migrations:
-        failed_migration_report = migration_analyzer.prepare_migration_information(failed_migrations)
-        output.write(output.migration_output(failed_migration_report, "failed"))
+        # Calculate active hours for failed migrations to fix the "0 hours" issue
+        failed_active_hours = migration_analyzer.calculate_active_migration_hours(mtv_plan_data)
+        failed_migration_report = migration_analyzer.prepare_migration_information(
+            failed_migrations, failed_active_hours
+        )
+        # Print header with failed report, then successful without header
+        output.write(output.migration_output(failed_migration_report, "failed", include_main_header=True))
+        output.write(("\n\n"))
+        output.write(("\n\n"))
+        output.write(output.migration_output(success_migration_report, "successful", include_main_header=False))
+        output.write(("\n\n"))
+    else:
+        output.write(output.migration_output(success_migration_report, "successful", include_main_header=True))
         output.write(("\n\n"))
 
-    output.write(output.migration_output(success_migration_report, "successful"))
-    output.write(("\n\n"))
+    # Always show VM-level summary with concurrent migration hours
+    vm_summary = migration_analyzer.prepare_vm_inform(all_vms, active_migration_hours)
+    if vm_summary:
+        output.write(output.vm_migration_output(vm_summary))
+        output.write(("\n\n"))
+
     output.write(output.operating_system_report(all_vms))
     output.write(("\n\n"))
     output.write(output.generate_concurrency_report(concurrency_data))

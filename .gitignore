@@ -5,6 +5,15 @@ coverage.lcov
 coverage.xml
 tests/outputs
 
+# Ignore actual data files in examples directory
+examples/
+
+# ignore plans this may be real data that shouldn't be on git
+plans/
+plans/multiple/*.yaml
+plans/single/*.yaml
+
+
 ### sourced from https://github.com/github/gitignore/blob/main/Python.gitignore
 # Byte-compiled / optimized / DLL files
 __pycache__/

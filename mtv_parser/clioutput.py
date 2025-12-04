@@ -66,14 +66,16 @@ class CLIOutput:
             self._finalize()
             self._closed = True
 
-    def migration_output(self: t.Self, migration_info: dict, type_of_migration: str) -> str:
-        report_header = "MIGRATION REPORT"
-        sep = "=" * len(report_header)
+    def migration_output(self: t.Self, migration_info: dict, type_of_migration: str, include_main_header: bool = True) -> str:
         rows = []
-        rows.append([""])
-        rows.append([report_header])
-        rows.append([sep])
-        rows.append([""])
+        
+        if include_main_header:
+            report_header = "MIGRATION PLAN REPORT"
+            sep = "=" * len(report_header)
+            rows.append([""])
+            rows.append([report_header])
+            rows.append([sep])
+            rows.append([""])
 
         header = f"The number of {type_of_migration} migration plans:"
         sep = "-" * len(header)
@@ -82,6 +84,20 @@ class CLIOutput:
         rows.append([sep])
 
         rows.append(["The number of vms:", migration_info["total_number_of_vms"]])
+
+        if type_of_migration == "failed" and migration_info.get("total_failed_vms", 0) > 0:
+            rows.append(["Number of VMs that failed:", migration_info["total_failed_vms"]])
+            
+            # Display failed VM names
+            failed_vm_names = migration_info.get("failed_vm_names", [])
+            if failed_vm_names:
+                rows.append(["Failed VM names:", ", ".join(failed_vm_names)])
+            
+            # Show VMs that actually migrated data for failed plans
+            total_vms_migrated = migration_info.get("total_vms_migrated", 0)
+            if total_vms_migrated > 0:
+                rows.append(["Number of VMs that migrated data:", total_vms_migrated])
+        
         rows.append(["Number of Warm Migration Plans: ", migration_info["warm_migrations"]])
         rows.append(["Number of Cold Migration Plans: ", migration_info["cold_migrations"]])
         rows.append(["Number of Cold Migrated VMs: ", migration_info["cold_migrated_vms"]])
@@ -95,9 +111,50 @@ class CLIOutput:
         rows.append(["Shortest runtime in minutes: ", f"{migration_info['min_minutes']:.1f}"])
         rows.append(["Average runtime in minutes: ", f"{migration_info['average_time']:.1f}"])
         rows.append(["Average disk size (GB): ", f"{migration_info['average_disk_size_gb']:.1f}"])
-        rows.append(["Aggregate transfer per hour (GB): ", f"{migration_info['average_transfer_speed']:.1f}"])
+        
+        # Only show aggregate transfer speed and total migration hours for successful plans
+        if type_of_migration != "failed":
+            rows.append(["Aggregate transfer per hour (GB): ", f"{migration_info['average_transfer_speed']:.1f}"])
+        
         rows.append(["Total Disk Size Migrated (GB): ", migration_info["total_disk_size_for_migration"]])
-        rows.append(["Total Migration Hours (approx): ", migration_info["total_migration_hrs"]])
+        
+        if type_of_migration != "failed":
+            rows.append(["Total Migration Hours (approx): ", migration_info["total_migration_hrs"]])
+
+        return tabulate(rows, tablefmt="plain")
+
+    def vm_migration_output(self: t.Self, vm_info: dict) -> str:
+        """Generate output for VM-level migration summary.
+
+        Args:
+            vm_info (dict): Dictionary containing VM-level statistics.
+
+        Returns:
+            str: Formatted string for VM migration summary.
+        """
+        header = "MIGRATED VMS SUMMARY"
+        sep = "=" * len(header)
+        rows = []
+        rows.append([""])
+        rows.append([header])
+        rows.append([sep])
+        rows.append([""])
+
+        rows.append(["The number of migrated vms:", vm_info["total_vms"]])
+        rows.append(["Longest runtime VM:", vm_info["longest_vm_name"]])
+        rows.append(["Longest runtime in minutes:", f'{vm_info["max_minutes"]:.1f}'])
+        rows.append(["Largest VM:", vm_info["largest_vm_name"]])
+        rows.append(["Largest VM disk size (GB):", f'{vm_info["largest_vm_disk_gb"]:.1f}'])
+        rows.append(["Smallest VM:", vm_info["smallest_vm_name"]])
+        rows.append(["Smallest VM disk size (GB):", f'{vm_info["smallest_vm_disk_gb"]:.1f}'])
+        rows.append(["Transferred data per hour (GB):", f'{vm_info["longest_vm_transferspeed"]:.1f}'])
+        rows.append(["Shortest runtime VM:", vm_info["shortest_vm_name"]])
+        rows.append(["Shortest runtime in minutes:", f'{vm_info["min_minutes"]:.1f}'])
+        rows.append(["Average runtime in minutes:", f'{vm_info["average_time_mins"]:.1f}'])
+        rows.append(["Average disk size (GB):", f'{vm_info["average_disk_size_gb"]:.1f}'])
+        rows.append(["Aggregate transfer per hour (GB):", f'{vm_info["aggregate_speed_gb_per_hr"]:.1f}'])
+        rows.append(["Total Disk Size Migrated (GB):", f'{vm_info["total_disk_size_gb"]:.1f}'])
+        rows.append(["Total Migration Hours (approx):", f'{vm_info["total_migration_hours"]:.2f}'])
 
         return tabulate(rows, tablefmt="plain")
 
