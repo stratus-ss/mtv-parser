@@ -1,14 +1,19 @@
 from collections import defaultdict
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 import typing as t
 import math
 
 
 class MigrationAnalyzer:
-    def __init__(self: t.Self) -> None:
-        """Initialize the MigrationAnalyzer class."""
-        pass
+    def __init__(self: t.Self, os_lookup: Optional[Dict[str, str]] = None) -> None:
+        """Initialize the MigrationAnalyzer class.
+
+        Args:
+            os_lookup (Optional[Dict[str, str]]): Optional dictionary mapping VM names to OS information
+                                                 for enhanced OS detection from VMI/VM YAML files.
+        """
+        self.os_lookup = os_lookup or {}
 
     def add_migration_attribute(self: t.Self, vm: Dict[str, Any]) -> Dict[str, Any]:
         """Add a 'migration_type' attribute to the VM dictionary.
@@ -259,8 +264,11 @@ class MigrationAnalyzer:
         disk_transfer_start_time = timedelta(seconds=0)
         vm_information = {}
 
-        os_name = vm.get("operatingSystem", "unknown")
         vm_name = vm.get("name")
+        # Try to get OS from VMI/VM YAML lookup first, then fallback to migration plan data
+        os_name = self.os_lookup.get(vm_name) if vm_name else None
+        if not os_name:
+            os_name = vm.get("operatingSystem", "unknown")
         vm_pending = False
 
         for phase in vm["pipeline"]:
@@ -353,6 +361,8 @@ class MigrationAnalyzer:
         failed_vm_count: int = 0,
         failed_vm_names: list[str] = None,
         processed_vm_count: int = 0,
+        canceled_vm_count: int = 0,
+        canceled_vm_names: list[str] = None,
     ) -> dict:
         """Create a dictionary summarizing migration details for a migration entry.
 
@@ -368,12 +378,16 @@ class MigrationAnalyzer:
             failed_vm_count (int): The number of VMs that failed in this plan.
             failed_vm_names (list[str]): The names of VMs that failed. Defaults to None.
             processed_vm_count (int): The number of VMs that actually migrated data.
+            canceled_vm_count (int): The number of VMs that were canceled in this plan.
+            canceled_vm_names (list[str]): The names of VMs that were canceled. Defaults to None.
 
         Returns:
             dict: A dictionary summarizing the migration details.
         """
         if failed_vm_names is None:
             failed_vm_names = []
+        if canceled_vm_names is None:
+            canceled_vm_names = []
             
         vm_data = next(iter(vm_information.values()))
         return {
@@ -389,6 +403,8 @@ class MigrationAnalyzer:
             ),
             "failed_vm_count": failed_vm_count,
             "failed_vm_names": failed_vm_names,
+            "canceled_vm_count": canceled_vm_count,
+            "canceled_vm_names": canceled_vm_names,
             "total_disk_size": total_disk_size,
             "duration": effective_duration,
             "start_time": vm_data["start_time"],
@@ -403,16 +419,18 @@ class MigrationAnalyzer:
         all_vms: dict,
         migration_window_for_plan: dict,
     ) -> tuple[
-        dict,  # vm_information
-        float,  # effective_duration
-        int,  # total_disk_size
-        list,  # vm_names
-        dict,  # all_vms
-        bool,  # vms_failed
-        dict,  # migration_window_for_plan
-        int,  # processed_vm_count
-        int,  # failed_vm_count
-        list,  # failed_vm_names
+        dict,  
+        float,  
+        int,  
+        list,  
+        dict,  
+        bool,  
+        dict,  
+        int,  
+        int,  
+        list,  
+        int,  # canceled_vm_count
+        list,  # canceled_vm_names
     ]:
         total_disk_size = 0
         vm_names = []
@@ -422,6 +440,8 @@ class MigrationAnalyzer:
         processed_vm_count = 0
         failed_vm_count = 0
         failed_vm_names = []
+        canceled_vm_count = 0
+        canceled_vm_names = []
 
         # Process all VMs for this migration entry
         for vm in entry["status"]["migration"]["vms"]:
@@ -435,17 +455,27 @@ class MigrationAnalyzer:
             
 
             vm_succeeded = True
+            vm_canceled = False
             for condition in new_vm_object["conditions"]:
                 if condition["type"] == "Failed":
                     vm_succeeded = False
                     vms_failed = True
                     break
+                elif condition["type"] == "Canceled":
+                    vm_succeeded = False
+                    vm_canceled = True
+                    vms_failed = True
+                    break
             
-            # Track failed VMs regardless of whether they have valid migration data
-            # (VMs can fail before DiskTransfer phase starts)
+            # Track failed and canceled VMs separately
+            # (VMs can fail/cancel before DiskTransfer phase starts)
             if not vm_succeeded:
-                failed_vm_count += 1
-                failed_vm_names.append(new_vm_object["name"])
+                if vm_canceled:
+                    canceled_vm_count += 1
+                    canceled_vm_names.append(new_vm_object["name"])
+                else:
+                    failed_vm_count += 1
+                    failed_vm_names.append(new_vm_object["name"])
             
             # Only count VMs that have valid data for statistics
             if vm_data["start_time"] and effective_duration:
@@ -469,6 +499,8 @@ class MigrationAnalyzer:
             processed_vm_count,
             failed_vm_count,
             failed_vm_names,
+            canceled_vm_count,
+            canceled_vm_names,
         )
 
     def get_migration_success_info(self: t.Self, mtv_plan_data: dict, all_vms: dict) -> tuple[list, list, dict]:
@@ -507,6 +539,8 @@ class MigrationAnalyzer:
                 processed_vm_count,
                 failed_vm_count,
                 failed_vm_names,
+                canceled_vm_count,
+                canceled_vm_names,
             ) = self._process_vm_entries(entry, all_vms, migration_window_for_plan)
 
             # Skip if no VMs were processed
@@ -515,7 +549,8 @@ class MigrationAnalyzer:
 
             migration_dict = self._create_migration_dict(
                 entry, vm_information, effective_duration, total_disk_size, vm_names, 
-                failed_vm_count, failed_vm_names, processed_vm_count
+                failed_vm_count, failed_vm_names, processed_vm_count,
+                canceled_vm_count, canceled_vm_names
             )
 
             # Categorize migration based on success/failure
@@ -593,6 +628,8 @@ class MigrationAnalyzer:
         warm_migrated_vms = 0
         total_failed_vms = 0
         all_failed_vm_names = []
+        total_canceled_vms = 0
+        all_canceled_vm_names = []
 
         for item in migrations:
             if item["migration_type"] == "cold":
@@ -605,6 +642,9 @@ class MigrationAnalyzer:
             # Aggregate failed VM count and names
             total_failed_vms += item.get("failed_vm_count", 0)
             all_failed_vm_names.extend(item.get("failed_vm_names", []))
+            # Aggregate canceled VM count and names
+            total_canceled_vms += item.get("canceled_vm_count", 0)
+            all_canceled_vm_names.extend(item.get("canceled_vm_names", []))
 
         # Populate temp_dict with the calculated values
         temp_dict["average_disk_size_gb"] = average_disk_size_gb
@@ -624,6 +664,8 @@ class MigrationAnalyzer:
         temp_dict["total_vms_migrated"] = total_vms_migrated  # VMs that actually transferred data
         temp_dict["total_failed_vms"] = total_failed_vms
         temp_dict["failed_vm_names"] = all_failed_vm_names
+        temp_dict["total_canceled_vms"] = total_canceled_vms
+        temp_dict["canceled_vm_names"] = all_canceled_vm_names
         temp_dict["warm_migrated_vms"] = warm_migrated_vms
         temp_dict["warm_migrations"] = warm_migrations
 

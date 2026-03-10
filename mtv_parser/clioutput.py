@@ -98,6 +98,14 @@ class CLIOutput:
             if total_vms_migrated > 0:
                 rows.append(["Number of VMs that migrated data:", total_vms_migrated])
         
+        # Display canceled VMs for both failed and successful migrations
+        total_canceled_vms = migration_info.get("total_canceled_vms", 0)
+        if total_canceled_vms > 0:
+            rows.append(["Number of VMs that were canceled:", total_canceled_vms])
+            canceled_vm_names = migration_info.get("canceled_vm_names", [])
+            if canceled_vm_names:
+                rows.append(["Canceled VM names:", ", ".join(canceled_vm_names)])
+        
         rows.append(["Number of Warm Migration Plans: ", migration_info["warm_migrations"]])
         rows.append(["Number of Cold Migration Plans: ", migration_info["cold_migrations"]])
         rows.append(["Number of Cold Migrated VMs: ", migration_info["cold_migrated_vms"]])

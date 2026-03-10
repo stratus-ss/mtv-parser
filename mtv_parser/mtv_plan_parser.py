@@ -4,6 +4,7 @@ import os
 import yaml
 from clioutput import CLIOutput
 from migration_information import MigrationAnalyzer  # Import the MigrationAnalyzer class
+from vm_os_lookup import VMOSLookup  # Import the VMOSLookup class
 
 
 def load_multiple_plans(directory: str) -> dict:
@@ -60,9 +61,21 @@ def main() -> None:
         with open(single_file, "r") as yaml_file:
             mtv_plan_data = yaml.safe_load(yaml_file)
 
-    # Initialize CLI output and MigrationAnalyzer
+    # Load VM/VMI YAML files for enhanced OS detection
+    # Try relative path first (when run from project root), then absolute path
+    vm_yaml_dir = "./vm_yaml"
+    if not os.path.isdir(vm_yaml_dir):
+        # If not found, try from script's directory perspective
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        vm_yaml_dir = os.path.join(os.path.dirname(script_dir), "vm_yaml")
+    
+    vm_os_lookup = VMOSLookup(vm_yaml_dir=vm_yaml_dir)
+    vm_os_lookup.load_vm_yaml_files()
+    os_lookup_dict = vm_os_lookup.get_lookup()
+
+    # Initialize CLI output and MigrationAnalyzer with OS lookup
     output = CLIOutput()
-    migration_analyzer = MigrationAnalyzer()
+    migration_analyzer = MigrationAnalyzer(os_lookup=os_lookup_dict)
 
     # Initialize dictionary to hold VM migration data
     all_vms = defaultdict(list)
