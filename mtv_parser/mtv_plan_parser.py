@@ -1,10 +1,11 @@
+import argparse
 from collections import defaultdict
 from datetime import timedelta
 import os
 import yaml
 from clioutput import CLIOutput
-from migration_information import MigrationAnalyzer  # Import the MigrationAnalyzer class
-from vm_os_lookup import VMOSLookup  # Import the VMOSLookup class
+from migration_information import MigrationAnalyzer
+from vm_os_lookup import VMOSLookup
 
 
 def load_multiple_plans(directory: str) -> dict:
@@ -38,8 +39,16 @@ def load_multiple_plans(directory: str) -> dict:
 
 
 def main() -> None:
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='MTV Migration Plan Analyzer')
+    parser.add_argument('--generate-gantt', action='store_true',
+                        help='Generate Gantt chart visualization')
+    args = parser.parse_args()
+    
+    # Check if Gantt chart should be generated (CLI arg or environment variable)
+    generate_gantt = args.generate_gantt or os.getenv('GENERATE_GANTT', '').lower() in ['true', '1', 'yes']
+    
     # Load YAML data
-
     multiple_dir = "./plans/multiple"
     single_file = "./plans/single/vm-plan-sample.yaml"
 
@@ -151,6 +160,18 @@ def main() -> None:
     output.write(output.operating_system_report(all_vms))
     output.write(("\n\n"))
     output.write(output.generate_concurrency_report(concurrency_data))
+
+    # Generate Gantt chart if requested
+    if generate_gantt:
+        try:
+            from visualization import plot_gantt_chart
+            output.write("\nGenerating Gantt chart...\n")
+            plot_gantt_chart(all_vms)
+            output.write("Gantt chart saved to charts/migration_gantt_chart.png\n")
+        except ImportError as e:
+            output.write(f"Warning: Could not generate Gantt chart - {e}\n")
+        except Exception as e:
+            output.write(f"Error generating Gantt chart: {e}\n")
 
     output.close()
 
