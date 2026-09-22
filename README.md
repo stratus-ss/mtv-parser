@@ -1,3 +1,7 @@
+# AI Usage Disclaimer
+
+Previous to Sept 2026, this project was maintained and written by the author. Post Sept 2026, some AI assistance is being utilized to generate tests, do code reviews and documentation updates. The author constrains AI based on complexity, code quality, and other software engineering practices (context7 and so on). This project has a strict, no-vibe coding policy. Tools may be used but the human is responsible for commits and functionality of the code submitted.
+
 # VM Migration Analyzer
 
 > [!WARNING]
