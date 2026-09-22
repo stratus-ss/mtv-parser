@@ -44,18 +44,18 @@ podman build . -t mtv-parser
 
 #### Running with Single File
 
-To analyze a single migration plan file:
+To analyze a single migration plan file, mount it over the fallback path. `plans/multiple` must be empty (or absent); otherwise the parser merges every YAML file in that directory instead.
 
 ```
-# Mount your YAML file over the sample file location
-podman run -v ./my_migration_plan.yaml:/mtv-parser/examples/vm-plans-sample2.yaml \
+# Mount your YAML file over the single-file fallback location
+podman run -v ./my_migration_plan.yaml:/mtv-parser/plans/single/vm-plan-sample.yaml \
            -v /your/local/chart/dir:/mtv-parser/charts \
            mtv-parser
 ```
 
 **Explanation:**
-- `-v ./my_migration_plan.yaml:/mtv-parser/examples/vm-plans-sample2.yaml`: This mounts your local YAML file directly over the sample file inside the container, replacing it
-- `-v /your/local/chart/dir:/mtv-parser/charts`: This mounts a local directory to receive the generated charts and any output files
+- `-v ./my_migration_plan.yaml:/mtv-parser/plans/single/vm-plan-sample.yaml`: This mounts your local YAML file over the fallback file the parser reads when `plans/multiple` has no YAML
+- `-v /your/local/chart/dir:/mtv-parser/charts`: This mounts a local directory to receive generated charts and any output files
 
 #### Running with Multiple Files
 
@@ -79,7 +79,7 @@ You can pull from the pre-built container from Quay. There are both `ubi9-stable
 
 **Single File Analysis:**
 ```
-podman run -v ./my_migration_plan.yaml:/mtv-parser/examples/vm-plans-sample2.yaml \
+podman run -v ./my_migration_plan.yaml:/mtv-parser/plans/single/vm-plan-sample.yaml \
            -v /your/local/chart/dir:/mtv-parser/charts \
            quay.io/sovens/rhtools/mtv-parser:ubi9-stable
 ```
@@ -100,7 +100,7 @@ podman run -v /path/to/your/yaml/files:/mtv-parser/plans/multiple \
 **Verifying Mounts:**
 You can verify your files are mounted correctly by running:
 ```
-podman run -v ./my_file.yaml:/mtv-parser/plans/single/vm-plans-sample2.yaml \
+podman run -v ./my_file.yaml:/mtv-parser/plans/single/vm-plan-sample.yaml \
            mtv-parser ls -la /mtv-parser/plans/single/
 ```
 
@@ -116,8 +116,9 @@ pip install git+https://github.com/rhtools/mtv-parser.git
 git clone https://github.com/rhtools/mtv-parser.git
 cd mtv-parser
 pip install -r requirements.txt
-python mtv_parser/mtv_plan_parser.py
 ```
+
+The `plans/` directory is gitignored and is not present after a clone. Create it and add YAML as described in [Usage](#usage) before running the parser.
 
 ## Required Dependencies
 
@@ -170,31 +171,37 @@ In the simplest form this can be obtained by running the following on an OpenShi
 oc get plan -A -o yaml > migration_plan.yaml
 ```
 
-> [!NOTE]
-> There are a couple of data samples in the `examples` folder in this repo.
-
 ## Usage
 
-### Single File Analysis
-
-To analyze a single VM migration data file:
+There are no command-line arguments. From the repository root:
 
 ```
 python mtv_parser/mtv_plan_parser.py
 ```
 
-By default, the script reads from `plans/single/vm-plan-sample.yaml`. You can modify the file path in the script to point to your own YAML files.
+That command always uses the same file-discovery order. It does **not** mean "analyze the single sample file."
+
+1. If `plans/multiple/` exists and contains **two or more** `.yaml` / `.yml` files, those files are merged and analyzed together.
+2. If `plans/multiple/` contains **exactly one** YAML file, that file is analyzed.
+3. If `plans/multiple/` is missing or contains no YAML files, the parser falls back to `plans/single/vm-plan-sample.yaml`.
+
+`plans/` is gitignored (it may contain real customer data). Create the directories you need and place YAML there, or edit the paths in `mtv_plan_parser.py`.
+
+### Single File Analysis
+
+To analyze one file, make sure `plans/multiple/` is empty or does not exist, then put your YAML at:
+
+```
+plans/single/vm-plan-sample.yaml
+```
+
+Alternatively, put **exactly one** YAML file in `plans/multiple/`.
+
+If `plans/multiple/` already has more than one YAML file, the parser will merge those files and ignore `plans/single/`.
 
 ### Multiple File Analysis
 
-The analyzer now supports processing multiple migration plan files from a directory to generate comprehensive reports across multiple migration waves or batches.
-
-**Directory Structure:**
-- Place multiple YAML files in the `plans/multiple/` directory
-- The analyzer will automatically detect and process all `.yaml` and `.yml` files in this directory
-- If multiple files are found, they will be merged and analyzed as a single dataset
-- If only one file is found in the multiple directory, it will be processed normally
-- If no files are found, the analyzer falls back to the single sample file
+Place two or more `.yaml` / `.yml` files in `plans/multiple/`. They are merged into one dataset before analysis, which is useful across migration waves or batches.
 
 **Benefits of Multiple File Processing:**
 - **Comprehensive Reporting:** Get overall statistics across all migration waves
@@ -202,10 +209,8 @@ The analyzer now supports processing multiple migration plan files from a direct
 - **Resource Planning:** Better understand total migration capacity and timing
 - **Historical Analysis:** Track migration performance across different time periods
 
-The merged analysis provides accurate overall statistics while maintaining the same report structure you're familiar with.
-
 > [!IMPORTANT]
-> Currently no command-line arguments are accepted. You need to either place your files in the appropriate directories or edit the `mtv_plan_parser.py` to update which files it processes. In the future, this will likely be enhanced with proper CLI argument support.
+> Currently no command-line arguments are accepted. Input is selected only by what is on disk under `plans/`, not by the command you type.
 
 
 ## Module Structure
@@ -375,12 +380,12 @@ The tool provides insights into migration concurrency:
 The analyzer supports two distinct processing modes:
 
 ### Single File Mode
-- Processes one migration plan file
-- Suitable for analyzing individual migration waves
-- Default file location: `examples/vm-plans-sample2.yaml`
+- Used when `plans/multiple/` is missing, empty, or contains exactly one YAML file
+- Fallback file: `plans/single/vm-plan-sample.yaml`
+- Suitable for analyzing an individual migration wave
 
 ### Multiple File Mode  
-- Automatically activated when multiple YAML files are detected in `plans/multiple/`
+- Automatically activated when **two or more** YAML files are present in `plans/multiple/`
 - Merges all migration data before analysis
 - Provides comprehensive statistics across all files
 - Maintains accurate concurrency analysis across multiple migration plans

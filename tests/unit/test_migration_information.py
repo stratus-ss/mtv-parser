@@ -459,15 +459,50 @@ def test_analyze_concurrent_migrations(migration_analyzer, test_id, migration_pl
                 "average_time": 45.0,
                 "total_number_of_vms": 3,
                 "total_disk_size_for_migration": 3.0,
-                "total_migration_hrs": 2,
+                "total_migration_hrs": 1.5,
                 "average_disk_size_gb": 1.1,
-                "average_transfer_speed": 1.5,
+                "average_transfer_speed": 2.0,
+                "longest_transfer_speed": 2.0,
                 "max_minutes": 60.0,
                 "min_minutes": 30.0,
                 "cold_migrations": 1,
                 "cold_migrated_vms": 1,
                 "warm_migrations": 1,
                 "warm_migrated_vms": 2,
+            },
+        ),
+        (
+            "overlapping_migrations",
+            [
+                {
+                    "name": "plan1",
+                    "total_duration_mins": 120.0,
+                    "vms": 1,
+                    "total_disk_size": 2048,
+                    "duration": 120.0,
+                    "start_time": datetime.datetime(2024, 8, 1, 10, 0, 0),
+                    "migration_type": "cold",
+                    "vm_names": ["vm1"],
+                },
+                {
+                    "name": "plan2",
+                    "total_duration_mins": 120.0,
+                    "vms": 1,
+                    "total_disk_size": 2048,
+                    "duration": 120.0,
+                    "start_time": datetime.datetime(2024, 8, 1, 11, 0, 0),
+                    "migration_type": "cold",
+                    "vm_names": ["vm2"],
+                },
+            ],
+            0,
+            {
+                "number_of_migrations": 2,
+                "total_migration_hrs": 3.0,
+                "average_transfer_speed": 1.33,
+                "longest_transfer_speed": 1.0,
+                "cold_migrations": 2,
+                "warm_migrations": 0,
             },
         ),
     ],
@@ -477,10 +512,11 @@ def test_prepare_migration_information(migration_analyzer, test_id, migrations, 
     
     # Basic assertion for key counts
     assert actual_result["number_of_migrations"] == expected_result["number_of_migrations"]
-    assert actual_result["total_migration_hrs"] == expected_result["total_migration_hrs"]
+    assert abs(actual_result["total_migration_hrs"] - expected_result["total_migration_hrs"]) < 0.01
     assert actual_result["cold_migrations"] == expected_result["cold_migrations"]
     assert actual_result["warm_migrations"] == expected_result["warm_migrations"]
-    assert actual_result["average_transfer_speed"] == expected_result["average_transfer_speed"]
+    assert abs(actual_result["average_transfer_speed"] - expected_result["average_transfer_speed"]) < 0.01
+    assert abs(actual_result["longest_transfer_speed"] - expected_result["longest_transfer_speed"]) < 0.01
 
 # Test for calculate_active_migration_hours
 def test_calculate_active_migration_hours(migration_analyzer):
@@ -507,6 +543,93 @@ def test_calculate_active_migration_hours(migration_analyzer):
     expected_hours = 5.0  # 2 hours + 3 hours = 5 hours total
     actual_hours = migration_analyzer.calculate_active_migration_hours(mtv_plan_data)
     assert actual_hours == expected_hours
+
+
+def test_calculate_active_migration_hours_keeps_fractional_precision(migration_analyzer):
+    """Hours must not be rounded before they are used as a GB/hour divisor."""
+    mtv_plan_data = {
+        "items": [
+            {
+                "status": {
+                    "migration": {
+                        "started": "2026-09-22T13:55:54Z",
+                        "completed": "2026-09-22T14:23:06Z",
+                    }
+                }
+            }
+        ]
+    }
+    actual_hours = migration_analyzer.calculate_active_migration_hours(mtv_plan_data)
+    expected_hours = 1632 / 3600  # 27 minutes 12 seconds
+    assert actual_hours == expected_hours
+    assert actual_hours != round(expected_hours, 2)
+
+
+def test_calculate_active_migration_hours_unions_overlap(migration_analyzer):
+    mtv_plan_data = {
+        "items": [
+            {
+                "status": {
+                    "migration": {
+                        "started": "2024-07-29T10:00:00Z",
+                        "completed": "2024-07-29T12:00:00Z",
+                    }
+                }
+            },
+            {
+                "status": {
+                    "migration": {
+                        "started": "2024-07-29T11:00:00Z",
+                        "completed": "2024-07-29T13:00:00Z",
+                    }
+                }
+            },
+        ]
+    }
+    actual_hours = migration_analyzer.calculate_active_migration_hours(mtv_plan_data)
+    assert actual_hours == 3.0
+
+
+@pytest.mark.parametrize(
+    "test_id, intervals, expected_hours",
+    [
+        ("empty", [], 0.0),
+        (
+            "sequential",
+            [
+                (datetime.datetime(2024, 8, 1, 10, 0, 0), datetime.datetime(2024, 8, 1, 11, 0, 0)),
+                (datetime.datetime(2024, 8, 1, 12, 0, 0), datetime.datetime(2024, 8, 1, 12, 30, 0)),
+            ],
+            1.5,
+        ),
+        (
+            "overlapping",
+            [
+                (datetime.datetime(2024, 8, 1, 10, 0, 0), datetime.datetime(2024, 8, 1, 12, 0, 0)),
+                (datetime.datetime(2024, 8, 1, 11, 0, 0), datetime.datetime(2024, 8, 1, 13, 0, 0)),
+            ],
+            3.0,
+        ),
+        (
+            "touching",
+            [
+                (datetime.datetime(2024, 8, 1, 10, 0, 0), datetime.datetime(2024, 8, 1, 11, 0, 0)),
+                (datetime.datetime(2024, 8, 1, 11, 0, 0), datetime.datetime(2024, 8, 1, 12, 0, 0)),
+            ],
+            2.0,
+        ),
+        (
+            "single",
+            [
+                (datetime.datetime(2024, 8, 1, 10, 0, 0), datetime.datetime(2024, 8, 1, 10, 27, 12)),
+            ],
+            0.4533333333333333,
+        ),
+    ],
+)
+def test_union_interval_hours(migration_analyzer, test_id, intervals, expected_hours):
+    actual_hours = migration_analyzer.union_interval_hours(intervals)
+    assert abs(actual_hours - expected_hours) < 1e-9
 
 # Complex test data for migration_success_info
 mtv_plan_data = {
@@ -737,8 +860,8 @@ def test_calculate_vm_totals(migration_analyzer, test_id, vms, expected_result):
                 "smallest_vm_disk_gb": 2.0,
                 "average_time_mins": 90.0,
                 "total_disk_size_gb": 6.0,
-                "total_migration_hours": 2.0,
-                "aggregate_speed_gb_per_hr": 3.0,
+                "total_migration_hours": 3.0,
+                "aggregate_speed_gb_per_hr": 2.0,
             },
         ),
         (

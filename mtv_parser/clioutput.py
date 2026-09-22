@@ -119,7 +119,7 @@ class CLIOutput:
         rows.append(["Total Disk Size Migrated (GB): ", migration_info["total_disk_size_for_migration"]])
         
         if type_of_migration != "failed":
-            rows.append(["Total Migration Hours (approx): ", migration_info["total_migration_hrs"]])
+            rows.append(["Total Migration Hours (approx): ", f"{migration_info['total_migration_hrs']:.2f}"])
 
         return tabulate(rows, tablefmt="plain")
 

@@ -144,32 +144,59 @@ class MigrationAnalyzer:
         average_per_hour = round((total_count / number_of_hours), 1)
         return math.ceil(average_per_hour)
 
-    def calculate_active_migration_hours(self: t.Self, mtv_plan_data: dict) -> float:
-        """Calculate total active migration time by summing all plan durations.
+    def union_interval_hours(self: t.Self, intervals: List[tuple[datetime, datetime]]) -> float:
+        """Return hours covered by the union of [start, end] intervals.
 
-        This method sums the actual time each migration plan was actively transferring data.
-        It does this by extracting start and completion timestamps from each migration plan's
-        status.migration section.
-
-        Args:
-            mtv_plan_data (dict): The full migration plan data dict.
-
-        Returns:
-            float: Total hours of active data transfer across all migration plans.
+        Overlapping and touching intervals are merged so concurrent work is counted
+        once. Gaps with no activity are excluded. The same formula is used for one
+        VM or many plans.
         """
-        total_seconds = 0
+        valid = [(start, end) for start, end in intervals if start and end and end > start]
+        if not valid:
+            return 0.0
 
-        for entry in mtv_plan_data["items"]:
+        valid.sort(key=lambda interval: interval[0])
+        merged = [valid[0]]
+        for start, end in valid[1:]:
+            last_start, last_end = merged[-1]
+            if start <= last_end:
+                merged[-1] = (last_start, max(last_end, end))
+            else:
+                merged.append((start, end))
+
+        total_seconds = sum((end - start).total_seconds() for start, end in merged)
+        return total_seconds / 3600.0
+
+    def _intervals_from_records(self: t.Self, records: List[Dict[str, Any]]) -> List[tuple[datetime, datetime]]:
+        """Build datetime intervals from records with start_time and duration or end_time."""
+        intervals: List[tuple[datetime, datetime]] = []
+        for record in records:
+            start = record.get("start_time")
+            if not isinstance(start, datetime):
+                continue
+            end = record.get("end_time")
+            if not isinstance(end, datetime):
+                duration = record.get("duration") or record.get("total_duration_mins")
+                if not duration:
+                    continue
+                end = start + timedelta(minutes=duration)
+            intervals.append((start, end))
+        return intervals
+
+    def calculate_active_migration_hours(self: t.Self, mtv_plan_data: dict) -> float:
+        """Hours covered by the union of plan started/completed timestamps.
+
+        Overlapping plans count once. Prefer union of effective VM/plan intervals
+        for aggregate GB/hour; this YAML clock is a fallback.
+        """
+        intervals: List[tuple[datetime, datetime]] = []
+        for entry in mtv_plan_data.get("items", []):
             migration_status = entry.get("status", {}).get("migration", {})
-
             if "started" in migration_status and "completed" in migration_status:
                 start = datetime.fromisoformat(migration_status["started"].replace("Z", "+00:00"))
                 end = datetime.fromisoformat(migration_status["completed"].replace("Z", "+00:00"))
-                duration = (end - start).total_seconds()
-                total_seconds += duration
-
-        total_hours = total_seconds / 3600
-        return round(total_hours, 2)
+                intervals.append((start, end))
+        return self.union_interval_hours(intervals)
 
     def calculate_effective_migration_time(self: t.Self, vm: Dict[str, Any], entry: Dict[str, Any]) -> float:
         """Calculate the effective migration time based on precopy duration drops.
@@ -353,6 +380,8 @@ class MigrationAnalyzer:
         failed_vm_count: int = 0,
         failed_vm_names: list[str] = None,
         processed_vm_count: int = 0,
+        plan_start: datetime | None = None,
+        plan_end: datetime | None = None,
     ) -> dict:
         """Create a dictionary summarizing migration details for a migration entry.
 
@@ -368,6 +397,8 @@ class MigrationAnalyzer:
             failed_vm_count (int): The number of VMs that failed in this plan.
             failed_vm_names (list[str]): The names of VMs that failed. Defaults to None.
             processed_vm_count (int): The number of VMs that actually migrated data.
+            plan_start (datetime | None): Earliest effective VM start in the plan.
+            plan_end (datetime | None): Latest effective VM end in the plan.
 
         Returns:
             dict: A dictionary summarizing the migration details.
@@ -376,9 +407,14 @@ class MigrationAnalyzer:
             failed_vm_names = []
             
         vm_data = next(iter(vm_information.values()))
+        start_time = plan_start if plan_start is not None else vm_data["start_time"]
+        if plan_start is not None and plan_end is not None:
+            duration_mins = (plan_end - plan_start).total_seconds() / 60
+        else:
+            duration_mins = effective_duration
         return {
             "name": entry["metadata"]["name"],
-            "total_duration_mins": effective_duration,
+            "total_duration_mins": duration_mins,
             "vms": len(entry["spec"]["vms"]),
             "vms_migrated": processed_vm_count,  # VMs that actually migrated data
             "vms_failed": str(
@@ -390,8 +426,9 @@ class MigrationAnalyzer:
             "failed_vm_count": failed_vm_count,
             "failed_vm_names": failed_vm_names,
             "total_disk_size": total_disk_size,
-            "duration": effective_duration,
-            "start_time": vm_data["start_time"],
+            "duration": duration_mins,
+            "start_time": start_time,
+            "end_time": plan_end,
             "migration_type": vm_data["migration_type"],
             "vm_names": vm_names,
             "migration_window": vm_data.get("migration_window"),
@@ -413,6 +450,8 @@ class MigrationAnalyzer:
         int,  # processed_vm_count
         int,  # failed_vm_count
         list,  # failed_vm_names
+        datetime | None,  # plan_start
+        datetime | None,  # plan_end
     ]:
         total_disk_size = 0
         vm_names = []
@@ -422,6 +461,8 @@ class MigrationAnalyzer:
         processed_vm_count = 0
         failed_vm_count = 0
         failed_vm_names = []
+        plan_start = None
+        plan_end = None
 
         # Process all VMs for this migration entry
         for vm in entry["status"]["migration"]["vms"]:
@@ -453,6 +494,13 @@ class MigrationAnalyzer:
                 total_disk_size += vm_data["disk_size"]
                 # Update all_vms with VM information including success status
                 self.add_to_dict(vm_information, all_vms, effective_duration, vm_succeeded)
+                vm_start = vm_data["start_time"]
+                vm_end = vm_start + timedelta(minutes=effective_duration)
+                if isinstance(vm_start, datetime):
+                    if plan_start is None or vm_start < plan_start:
+                        plan_start = vm_start
+                    if plan_end is None or vm_end > plan_end:
+                        plan_end = vm_end
 
             # Update migration window information
             if vm_data.get("migration_window"):
@@ -469,6 +517,8 @@ class MigrationAnalyzer:
             processed_vm_count,
             failed_vm_count,
             failed_vm_names,
+            plan_start,
+            plan_end,
         )
 
     def get_migration_success_info(self: t.Self, mtv_plan_data: dict, all_vms: dict) -> tuple[list, list, dict]:
@@ -507,6 +557,8 @@ class MigrationAnalyzer:
                 processed_vm_count,
                 failed_vm_count,
                 failed_vm_names,
+                plan_start,
+                plan_end,
             ) = self._process_vm_entries(entry, all_vms, migration_window_for_plan)
 
             # Skip if no VMs were processed
@@ -515,7 +567,7 @@ class MigrationAnalyzer:
 
             migration_dict = self._create_migration_dict(
                 entry, vm_information, effective_duration, total_disk_size, vm_names, 
-                failed_vm_count, failed_vm_names, processed_vm_count
+                failed_vm_count, failed_vm_names, processed_vm_count, plan_start, plan_end
             )
 
             # Categorize migration based on success/failure
@@ -572,10 +624,10 @@ class MigrationAnalyzer:
         total_number_of_vms = sum(item["vms"] for item in migrations)
         total_vms_migrated = sum(item.get("vms_migrated", item["vms"]) for item in migrations)
         total_disk_size_for_migration = sum(item["total_disk_size"] for item in migrations) / 1024
-        total_migration_hrs = active_migration_hours if active_migration_hours is not None else 0
-
         average_disk_size_gb = total_disk_size_for_migration / total_vms_migrated if total_vms_migrated > 0 else 0
-        # Calculate aggregate transfer speed: total GB ÷ total active hours
+        union_hours = self.union_interval_hours(self._intervals_from_records(migrations))
+        total_migration_hrs = union_hours if union_hours > 0 else (active_migration_hours or 0)
+        # Aggregate: total GB ÷ union of active intervals (overlaps counted once)
         average_transfer_speed = (
             round(total_disk_size_for_migration / total_migration_hrs, 2) if total_migration_hrs > 0 else 0
         )
@@ -584,7 +636,8 @@ class MigrationAnalyzer:
         max_minutes = max(item["total_duration_mins"] for item in migrations)
         longest_plan = next(item for item in migrations if item["total_duration_mins"] == max_minutes)
         longest_disk_size_gb = longest_plan["total_disk_size"] / 1024
-        longest_transfer_speed = longest_disk_size_gb / max_minutes if max_minutes > 0 else 0
+        longest_hours = max_minutes / 60.0
+        longest_transfer_speed = longest_disk_size_gb / longest_hours if longest_hours > 0 else 0
         min_minutes = min(item["total_duration_mins"] for item in migrations)
 
         cold_migrations = 0
@@ -695,8 +748,8 @@ class MigrationAnalyzer:
 
         Args:
             all_vms (Dict[str, List[Dict[str, Any]]]): Dictionary of all VMs by OS type.
-            concurrent_migration_hours (float): Actual wall-clock hours when migrations ran
-                (concurrent time, not sum of VM durations). Defaults to 0.
+            concurrent_migration_hours (float): Fallback hours if VM records have no timestamps.
+                Aggregate prefers the union of effective VM intervals.
 
         Returns:
             Dict[str, Any]: Dictionary containing VM-level statistics or empty dict if no data.
@@ -714,17 +767,14 @@ class MigrationAnalyzer:
         largest_vm = max(vms, key=lambda v: v["disk_size"])
         smallest_vm = min(vms, key=lambda v: v["disk_size"])
 
-        # Calculate speeds and averages
-        # Use concurrent hours for aggregate speed (not sum of VM durations)
         longest_vm_speed = self._calculate_vm_transfer_speed(longest_vm)
         avg_runtime_mins = round(total_mins / total_vms, 1)
         avg_disk_gb = round(total_disk_gb / total_vms, 1)
-        
-        # Aggregate speed uses CONCURRENT migration hours (wall-clock time)
+
+        union_hours = self.union_interval_hours(self._intervals_from_records(vms))
+        total_migration_hours = union_hours if union_hours > 0 else (concurrent_migration_hours or 0)
         aggregate_speed_gb_per_hr = (
-            round(total_disk_gb / concurrent_migration_hours, 2) 
-            if concurrent_migration_hours > 0 
-            else 0.0
+            round(total_disk_gb / total_migration_hours, 2) if total_migration_hours > 0 else 0.0
         )
 
         return {
@@ -742,7 +792,7 @@ class MigrationAnalyzer:
             "average_disk_size_gb": avg_disk_gb,
             "aggregate_speed_gb_per_hr": aggregate_speed_gb_per_hr,
             "total_disk_size_gb": round(total_disk_gb, 1),
-            "total_migration_hours": concurrent_migration_hours,
+            "total_migration_hours": total_migration_hours,
         }
 
     def sort_migration_events(

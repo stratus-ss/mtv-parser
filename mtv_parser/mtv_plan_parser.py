@@ -6,13 +6,30 @@ from clioutput import CLIOutput
 from migration_information import MigrationAnalyzer  # Import the MigrationAnalyzer class
 
 
-def load_multiple_plans(directory: str) -> dict:
-    """Load and merge multiple MTV plan files into a single data structure.
-    
+def normalize_plan_data(plan_data: dict | None) -> dict:
+    """Normalize loaded YAML into a dict with an items list of Plan objects.
+
     Handles both:
+    - List structures with an "items" key (e.g. `oc get plan -A -o yaml`)
     - Individual Plan objects (single plan per file)
-    - List structures with "items" key (multiple plans in one file)
     """
+    if not plan_data:
+        return {"items": []}
+    if "items" in plan_data:
+        return {"items": list(plan_data["items"] or [])}
+    if plan_data.get("kind") == "Plan":
+        return {"items": [plan_data]}
+    return {"items": []}
+
+
+def load_plan_file(file_path: str) -> dict:
+    """Load a single YAML file and normalize it to {items: [...]}."""
+    with open(file_path, "r") as yaml_file:
+        return normalize_plan_data(yaml.safe_load(yaml_file))
+
+
+def load_multiple_plans(directory: str) -> dict:
+    """Load and merge multiple MTV plan files into a single data structure."""
     merged_data = {"items": []}
 
     yaml_files = [
@@ -21,17 +38,7 @@ def load_multiple_plans(directory: str) -> dict:
 
     for file_name in yaml_files:
         file_path = os.path.join(directory, file_name)
-        with open(file_path, "r") as yaml_file:
-            plan_data = yaml.safe_load(yaml_file)
-            if not plan_data:
-                continue
-                
-            # If the YAML contains a list with "items" key, extend with those items
-            if "items" in plan_data:
-                merged_data["items"].extend(plan_data["items"])
-            # Otherwise, treat the entire object as a single plan item
-            elif "kind" in plan_data and plan_data["kind"] == "Plan":
-                merged_data["items"].append(plan_data)
+        merged_data["items"].extend(load_plan_file(file_path)["items"])
 
     return merged_data
 
@@ -42,23 +49,20 @@ def main() -> None:
     multiple_dir = "./plans/multiple"
     single_file = "./plans/single/vm-plan-sample.yaml"
 
-    yaml_files = [
-        f
-        for f in os.listdir(multiple_dir)
-        if f.endswith((".yaml", ".yml")) and os.path.isfile(os.path.join(multiple_dir, f))
-    ]
+    yaml_files = []
+    if os.path.isdir(multiple_dir):
+        yaml_files = [
+            f
+            for f in os.listdir(multiple_dir)
+            if f.endswith((".yaml", ".yml")) and os.path.isfile(os.path.join(multiple_dir, f))
+        ]
 
     if len(yaml_files) > 1:
-        # Process multiple files as merged dataset
         mtv_plan_data = load_multiple_plans(multiple_dir)
     elif len(yaml_files) == 1:
-        # Single file in multiple directory
-        with open(os.path.join(multiple_dir, yaml_files[0]), "r") as yaml_file:
-            mtv_plan_data = yaml.safe_load(yaml_file)
+        mtv_plan_data = load_plan_file(os.path.join(multiple_dir, yaml_files[0]))
     else:
-        # Fallback to sample file
-        with open(single_file, "r") as yaml_file:
-            mtv_plan_data = yaml.safe_load(yaml_file)
+        mtv_plan_data = load_plan_file(single_file)
 
     # Initialize CLI output and MigrationAnalyzer
     output = CLIOutput()
@@ -105,20 +109,11 @@ def main() -> None:
         migration_window_list, max_concurrent, peak_time
     )
 
-    # Calculate active migration hours
-    active_migration_hours = migration_analyzer.calculate_active_migration_hours(mtv_plan_data)
-
-    # Prepare migration reports
-    success_migration_report = migration_analyzer.prepare_migration_information(
-        successful_migrations, active_migration_hours
-    )
+    # Prepare migration reports using union-of-intervals hours from the plan records
+    success_migration_report = migration_analyzer.prepare_migration_information(successful_migrations)
 
     if failed_migrations:
-        # Calculate active hours for failed migrations to fix the "0 hours" issue
-        failed_active_hours = migration_analyzer.calculate_active_migration_hours(mtv_plan_data)
-        failed_migration_report = migration_analyzer.prepare_migration_information(
-            failed_migrations, failed_active_hours
-        )
+        failed_migration_report = migration_analyzer.prepare_migration_information(failed_migrations)
         # Print header with failed report, then successful without header
         output.write(output.migration_output(failed_migration_report, "failed", include_main_header=True))
         output.write(("\n\n"))
@@ -129,8 +124,7 @@ def main() -> None:
         output.write(output.migration_output(success_migration_report, "successful", include_main_header=True))
         output.write(("\n\n"))
 
-    # Always show VM-level summary with concurrent migration hours
-    vm_summary = migration_analyzer.prepare_vm_inform(all_vms, active_migration_hours)
+    vm_summary = migration_analyzer.prepare_vm_inform(all_vms)
     if vm_summary:
         output.write(output.vm_migration_output(vm_summary))
         output.write(("\n\n"))
