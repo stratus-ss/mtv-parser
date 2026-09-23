@@ -1,9 +1,26 @@
 from collections import defaultdict
 from datetime import timedelta
+import argparse
 import os
 import yaml
 from clioutput import CLIOutput
 from migration_information import MigrationAnalyzer  # Import the MigrationAnalyzer class
+from visualization import plot_gantt_chart
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Analyze MTV migration plan YAML files.")
+    parser.add_argument(
+        "--gantt",
+        action="store_true",
+        help="Generate a Gantt chart PNG under charts/ (off by default).",
+    )
+    parser.add_argument(
+        "--gantt-output",
+        default="charts/migration_gantt_chart.png",
+        help="Path for the Gantt chart PNG when --gantt is set (default: charts/migration_gantt_chart.png).",
+    )
+    return parser.parse_args()
 
 
 def normalize_plan_data(plan_data: dict | None) -> dict:
@@ -44,8 +61,9 @@ def load_multiple_plans(directory: str) -> dict:
 
 
 def main() -> None:
-    # Load YAML data
+    args = parse_args()
 
+    # Load YAML data
     multiple_dir = "./plans/multiple"
     single_file = "./plans/single/vm-plan-sample.yaml"
 
@@ -61,8 +79,13 @@ def main() -> None:
         mtv_plan_data = load_multiple_plans(multiple_dir)
     elif len(yaml_files) == 1:
         mtv_plan_data = load_plan_file(os.path.join(multiple_dir, yaml_files[0]))
-    else:
+    elif os.path.isfile(single_file):
         mtv_plan_data = load_plan_file(single_file)
+    else:
+        raise FileNotFoundError(
+            "No plan YAML found. Put one or more .yaml/.yml files in "
+            f"{multiple_dir}/, or provide {single_file}."
+        )
 
     # Initialize CLI output and MigrationAnalyzer
     output = CLIOutput()
@@ -132,6 +155,13 @@ def main() -> None:
     output.write(output.operating_system_report(all_vms))
     output.write(("\n\n"))
     output.write(output.generate_concurrency_report(concurrency_data))
+
+    if args.gantt:
+        chart_path = plot_gantt_chart(all_vms, output_path=args.gantt_output)
+        if chart_path:
+            output.write(f"\nGantt chart saved to {chart_path}\n")
+        else:
+            output.write("\nNo VM timing data available for Gantt chart.\n")
 
     output.close()
 
