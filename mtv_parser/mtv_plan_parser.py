@@ -20,7 +20,21 @@ def parse_args() -> argparse.Namespace:
         default="charts/migration_gantt_chart.png",
         help="Path for the Gantt chart PNG when --gantt is set (default: charts/migration_gantt_chart.png).",
     )
+    parser.add_argument(
+        "--vms-by-date",
+        action="store_true",
+        help="Print successful VM names grouped by UTC completion date (off by default).",
+    )
     return parser.parse_args()
+
+
+def _maybe_write_vms_by_date(args: argparse.Namespace, output, analyzer, all_vms) -> None:
+    """Write the optional UTC-date VM grouping when --vms-by-date is set."""
+    if not args.vms_by_date:
+        return
+    grouped = analyzer.group_successful_vms_by_completion_date(all_vms)
+    output.write("\n\n")
+    output.write(output.vms_by_date_output(grouped))
 
 
 def normalize_plan_data(plan_data: dict | None) -> dict:
@@ -155,6 +169,7 @@ def main() -> None:
     output.write(output.operating_system_report(all_vms))
     output.write(("\n\n"))
     output.write(output.generate_concurrency_report(concurrency_data))
+    _maybe_write_vms_by_date(args, output, migration_analyzer, all_vms)
 
     if args.gantt:
         chart_path = plot_gantt_chart(all_vms, output_path=args.gantt_output)

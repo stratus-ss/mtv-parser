@@ -158,6 +158,27 @@ class CLIOutput:
 
         return tabulate(rows, tablefmt="plain")
 
+    def vms_by_date_output(self: t.Self, vms_by_date: dict) -> str:
+        """Format successful VM names grouped by UTC completion date.
+
+        Args:
+            vms_by_date: Mapping of date -> sorted unique VM names.
+
+        Returns:
+            str: Report section with date headings and indented names.
+        """
+        header = "VMS BY COMPLETION DATE"
+        sep = "=" * len(header)
+        lines = ["", header, sep, ""]
+        if not vms_by_date:
+            lines.append("No VMs with a completion date.")
+            return "\n".join(lines) + "\n"
+        for day, names in vms_by_date.items():
+            lines.append(day.isoformat())
+            for name in names:
+                lines.append(f"  {name}")
+        return "\n".join(lines) + "\n"
+
     def operating_system_report(self: t.Self, all_vms: dict) -> str:
         rows = []
         os_header = "OS REPORT"

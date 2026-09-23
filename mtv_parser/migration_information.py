@@ -1,5 +1,5 @@
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Union
 import typing as t
 import math
@@ -704,6 +704,40 @@ class MigrationAnalyzer:
                     continue
                 successful_vms.append(vm)
         return successful_vms
+
+    def _completion_datetime(self: t.Self, vm: Dict[str, Any]) -> datetime | None:
+        """Return the VM completion instant, or None when it cannot be derived.
+
+        add_to_dict guarantees end_time on every VM record produced by the
+        normal pipeline, so the direct lookup is the expected path.
+        """
+        end_time = vm.get("end_time")
+        if isinstance(end_time, datetime):
+            return end_time
+        return None
+
+    def _utc_calendar_date(self: t.Self, value: datetime) -> date:
+        """Calendar date in UTC. Naive datetimes are treated as UTC."""
+        if value.tzinfo is not None:
+            value = value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value.date()
+
+    def group_successful_vms_by_completion_date(
+        self: t.Self,
+        all_vms: Dict[str, List[Dict[str, Any]]],
+    ) -> dict[date, list[str]]:
+        """Group successful VM names under UTC completion dates.
+
+        Names are unique per date and sorted alphabetically. Dates are sorted
+        ascending. Empty input returns an empty dict.
+        """
+        grouped: dict[date, set[str]] = defaultdict(set)
+        for vm in self._filter_successful_vms(all_vms):
+            completion = self._completion_datetime(vm)
+            if completion is None:
+                continue
+            grouped[self._utc_calendar_date(completion)].add(vm["name"])
+        return {day: sorted(names) for day, names in sorted(grouped.items())}
 
     def _calculate_vm_transfer_speed(self: t.Self, vm: Dict[str, Any]) -> float:
         """Calculate transfer speed for a single VM in GB/hour.
