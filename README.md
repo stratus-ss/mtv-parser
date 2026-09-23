@@ -5,9 +5,9 @@ Previous to Sept 2026, this project was maintained and written by the author. Po
 # VM Migration Analyzer
 
 > [!WARNING]
-> All of the metrics herein are constrained by what the MTV tool collects. That means things such as Windows reboot times are NOT included as the Migration plans do not rack this data!
+> All of the metrics herein are constrained by what the MTV tool collects. That means things such as Windows reboot times are NOT included, as the Migration plans do not track this data!
 
-**VM Migration Analyzer** is a Python toolkit designed to process, analyze, and visualize virtual machine (VM) migration data. It parses OpenShift's [MTV](https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.8) migration plans YAML files, calculates effective migration times, analyzes concurrent migrations, and produces reports with visualizations. This tool is particularly useful for migration teams who need to understand migration performance metrics and optimize future migration waves.
+**VM Migration Analyzer** is a Python toolkit designed to process, analyze, and visualize virtual machine (VM) migration data. It parses OpenShift's [MTV](https://docs.redhat.com/en/documentation/migration_toolkit_for_virtualization/2.8) migration plans YAML files, calculates effective migration times, analyzes concurrent migrations, and produces text reports (and an optional Gantt PNG). This tool is particularly useful for migration teams who need to understand migration performance metrics and optimize future migration waves.
 
 ## Features
 
@@ -15,8 +15,9 @@ Previous to Sept 2026, this project was maintained and written by the author. Po
 - **Smart Migration Time Analysis:** Detects significant drops in precopy duration to accurately calculate effective migration times
 - **Comprehensive Reporting:** Generates detailed reports on successful and failed migrations, OS distribution, and performance metrics
 - **Concurrency Analysis:** Tracks and analyzes concurrent migrations to identify peaks, patterns, and resource utilization
-- **Visualization:** Creates Gantt charts to visualize migration timelines and identify overlapping migrations
+- **Visualization:** Optional Gantt chart PNG (`--gantt`) of migration timelines and overlapping migrations
 - **Performance Metrics:** Calculates key indicators like transfer speeds, average durations, and resource efficiency
+- **VMs by completion date:** Optional `--vms-by-date` listing of successful VM names grouped by UTC date
 
 ## Installation
 
@@ -25,7 +26,7 @@ VM Migration Analyzer can be installed directly from GitHub using pip, or execut
 ### Container
 
 > [!NOTE]
-> Matplotlib cannot currently show you the chart interactively without appropriate configuration of your local container engine. You should mount a volume so that the image can be exported out of the container.
+> Charts are written as PNG files (the process uses matplotlib's non-interactive `Agg` backend). Mount a volume onto `/mtv-parser/charts` if you pass `--gantt`, or the image stays inside the container. The default container command does **not** generate a chart; add `--gantt` to the command if you want one.
 
 #### Understanding Podman Volume Mounts
 
@@ -40,7 +41,7 @@ Podman volume mounts allow you to share files and directories between your local
 
 #### Building
 
-There is a container file located in this repository. The build is small and has been tested with podman.
+There is a `Containerfile` in this repository. The image build clones `https://github.com/rhtools/mtv-parser` and checks out the `dev` branch; it does not copy your local working tree.
 
 ```
 podman build . -t mtv-parser
@@ -54,7 +55,7 @@ To analyze a single migration plan file, mount it over the fallback path. `plans
 # Mount your YAML file over the single-file fallback location
 podman run -v ./my_migration_plan.yaml:/mtv-parser/plans/single/vm-plan-sample.yaml \
            -v /your/local/chart/dir:/mtv-parser/charts \
-           mtv-parser
+           mtv-parser --gantt
 ```
 
 **Explanation:**
@@ -69,7 +70,7 @@ To analyze multiple migration plan files:
 # Mount your directory containing multiple YAML files
 podman run -v /path/to/your/yaml/files:/mtv-parser/plans/multiple \
            -v /your/local/chart/dir:/mtv-parser/charts \
-           mtv-parser
+           mtv-parser --gantt
 ```
 
 **Explanation:**
@@ -85,14 +86,14 @@ You can pull from the pre-built container from Quay. There are both `ubi9-stable
 ```
 podman run -v ./my_migration_plan.yaml:/mtv-parser/plans/single/vm-plan-sample.yaml \
            -v /your/local/chart/dir:/mtv-parser/charts \
-           quay.io/sovens/rhtools/mtv-parser:ubi9-stable
+           quay.io/sovens/rhtools/mtv-parser:ubi9-stable --gantt
 ```
 
 **Multiple File Analysis:**
 ```
 podman run -v /path/to/your/yaml/files:/mtv-parser/plans/multiple \
            -v /your/local/chart/dir:/mtv-parser/charts \
-           quay.io/sovens/rhtools/mtv-parser:ubi9-stable
+           quay.io/sovens/rhtools/mtv-parser:ubi9-stable --gantt
 ```
 #### Volume Mount Troubleshooting
 
@@ -122,17 +123,21 @@ cd mtv-parser
 pip install -r requirements.txt
 ```
 
+Requires **Python 3.11 or newer**. There is no console-script entry point; after install or clone, run `python mtv_parser/mtv_plan_parser.py` from the repository root (that path is what makes the module imports resolve).
+
 The `plans/` directory is gitignored and is not present after a clone. Create it and add YAML as described in [Usage](#usage) before running the parser.
 
 ## Required Dependencies
 
+See `requirements.txt`. The analysis path uses:
+
 - PyYAML: For parsing YAML migration plan files
-- matplotlib: For generating Gantt chart visualizations
+- matplotlib: For generating Gantt chart PNGs (non-interactive `Agg` backend)
 - tabulate: For formatting CLI output tables
 
 ## Input File Format
 
-The analyzer expects YAML files containing VM migration plan data with the following structure:
+The analyzer accepts either a Plan **list** (`items:` as from `oc get plan -A -o yaml`) or a single object with `kind: Plan`. It expects VM migration plan data with the following structure:
 
 - Migration metadata and specifications
 - VM details including operating system information
@@ -177,7 +182,7 @@ oc get plan -A -o yaml > migration_plan.yaml
 
 ## Usage
 
-There are no command-line arguments. From the repository root:
+From the repository root:
 
 ```
 python mtv_parser/mtv_plan_parser.py
@@ -190,6 +195,30 @@ That command always uses the same file-discovery order. It does **not** mean "an
 3. If `plans/multiple/` is missing or contains no YAML files, the parser falls back to `plans/single/vm-plan-sample.yaml`.
 
 `plans/` is gitignored (it may contain real customer data). Create the directories you need and place YAML there, or edit the paths in `mtv_plan_parser.py`.
+
+### Optional Gantt chart
+
+Text reports run by default. To also write a Gantt chart PNG:
+
+```
+python mtv_parser/mtv_plan_parser.py --gantt
+```
+
+Optional output path (default `charts/migration_gantt_chart.png`):
+
+```
+python mtv_parser/mtv_plan_parser.py --gantt --gantt-output charts/my_wave.png
+```
+
+### Optional VMs-by-date report
+
+To print successful VM names grouped by UTC completion date:
+
+```
+python mtv_parser/mtv_plan_parser.py --vms-by-date
+```
+
+Flags can be combined (`--gantt --vms-by-date`).
 
 ### Single File Analysis
 
@@ -214,7 +243,7 @@ Place two or more `.yaml` / `.yml` files in `plans/multiple/`. They are merged i
 - **Historical Analysis:** Track migration performance across different time periods
 
 > [!IMPORTANT]
-> Currently no command-line arguments are accepted. Input is selected only by what is on disk under `plans/`, not by the command you type.
+> Plan input is selected by what is on disk under `plans/`, not by positional arguments. Optional flags: `--gantt` / `--gantt-output` for a PNG chart, `--vms-by-date` for a UTC-date grouping of successful VMs.
 
 
 ## Module Structure
@@ -223,8 +252,9 @@ Place two or more `.yaml` / `.yml` files in `plans/multiple/`. They are merged i
 |--------|-------------|
 | `mtv_plan_parser.py` | Main script that orchestrates the analysis process |
 | `migration_information.py` | Core class `MigrationAnalyzer` for extracting and analyzing VM migration data |
+| `vm_information.py` | Standalone helpers for effective migration time (also implemented on `MigrationAnalyzer`) |
 | `clioutput.py` | Handles formatting and display of results to the command line |
-| `visualization.py` | Creates Gantt charts for visualizing migration timelines |
+| `visualization.py` | Writes Gantt chart PNGs of migration timelines |
 
 ## Key Methods of MigrationAnalyzer Class
 
@@ -241,8 +271,8 @@ Place two or more `.yaml` / `.yml` files in `plans/multiple/`. They are merged i
 - Determines the VM's migration window based on the effective duration
 
 **`analyze_concurrent_migrations(migration_plan_by_hour, max_concurrent_total, peak_time)`**
-- Tracks VM migrations over time to analyze concurrency patterns
-- Identifies peak concurrent migrations and their timing
+- Formats hourly concurrency windows (from `find_deployment_windows`) for reporting
+- Uses the peak count and peak time already computed in `main()`
 - Calculates hourly statistics and average concurrent VMs
 
 **`get_migration_success_info(mtv_plan_data, all_vms)`**
@@ -250,10 +280,17 @@ Place two or more `.yaml` / `.yml` files in `plans/multiple/`. They are merged i
 - Categorizes migrations into successful and failed lists
 - Tracks migration windows for planning
 
-**`prepare_migration_information(migrations, active_migration_hours)`**
+**`prepare_migration_information(migrations, active_migration_hours=0)`**
 - Calculates and organizes overall migration statistics
 - Computes various statistics like average time, total VMs, disk size
 - Identifies the longest migration plan and calculates cold/warm migration counts
+- Prefers union-of-interval hours from plan records when computing aggregate GB/hour
+
+**`prepare_vm_inform(all_vms, concurrent_migration_hours=0)`**
+- VM-level stats for successfully migrated VMs (longest/shortest, disk size, aggregate speed)
+
+**`group_successful_vms_by_completion_date(all_vms)`**
+- Groups unique successful VM names by UTC calendar completion date
 
 **`sort_migration_events(all_vms)`**
 - Processes migration events and sorts them chronologically
@@ -271,23 +308,25 @@ Place two or more `.yaml` / `.yml` files in `plans/multiple/`. They are merged i
 The `CLIOutput` class provides methods for generating formatted reports:
 
 - `migration_output()`: Generates reports on successful or failed migrations
+- `vm_migration_output()`: VM-level summary (written when successful VM records exist)
 - `operating_system_report()`: Creates breakdowns by operating system
 - `generate_concurrency_report()`: Produces concurrency analysis reports
+- `vms_by_date_output()`: Optional UTC-date grouping (`--vms-by-date`)
 
 ### Visualization Module
 
-**`plot_gantt_chart(data)`**
-- Creates a visualization of VM migrations as a Gantt chart
-- Shows timing relationships between different migrations
-- Saves the chart as a PNG file
+**`plot_gantt_chart(data, output_path="charts/migration_gantt_chart.png")`**
+- Draws VM migrations as a Gantt chart (separate panels when waves are far apart)
+- Times are normalized to UTC
+- Writes a PNG and returns the path, or `None` if there is no timing data
 
 ## Example Output
 
-The analyzer produces several reports in one output:
+The analyzer produces several reports in one output. Failed plans, if any, are printed first. Successful VM records also produce a **MIGRATED VMS SUMMARY** block. With `--vms-by-date`, a **VMS BY COMPLETION DATE** section is appended.
 
 ```
-MIGRATION REPORT
-================
+MIGRATION PLAN REPORT
+=====================
 
 The number of successful migration plans:        7
 -----------------------------------------
@@ -303,10 +342,18 @@ Transferred data per hour in longest plan (GB):  1.2
 Shortest runtime in minutes:                     9.5
 Average runtime in minutes:                      275.3
 Average disk size (GB):                          701.6
-Average transfer per hour (GB):                  152.9
+Aggregate transfer per hour (GB):                152.9
 Total Disk Size Migrated (GB):                   4911.0
-Total Migration Hours (approx):                  10
+Total Migration Hours (approx):                  10.00
 
+
+MIGRATED VMS SUMMARY
+====================
+
+The number of migrated vms:                      19
+Longest runtime VM:                              example-vm
+Longest runtime in minutes:                      120.0
+...
 
 OS REPORT
 =========
@@ -350,15 +397,15 @@ Hourly concurrent VMs for Migration Window 1:
 ```
 
 ### Gantt Chart Visualization
-The tool generates a Gantt chart visualization showing VM migrations over time. This chart helps identify:
+With `--gantt`, the tool writes a Gantt chart of VM migrations over time. This chart helps identify:
 - Migration overlaps and patterns
 - Peak migration periods
 - OS-specific migration behaviors
 
-The chart is saved as `migration_gantt_chart.png` in the current directory.
+The chart is saved to `charts/migration_gantt_chart.png` by default (override with `--gantt-output`).
 
 Below is an example
-![plot](examples/migration_gantt_chart.png)
+![plot](charts/migration_gantt_chart.png)
 
 The analyzer uses the following to determine the true effective migration time:
 
@@ -410,6 +457,7 @@ Contributions to VM Migration Analyzer are welcome! The codebase is organized in
 - `mtv_plan_parser.py`: Main entry point and workflow orchestration
 - `clioutput.py`: Output formatting and report generation
 - `visualization.py`: Data visualization with matplotlib
+- `vm_information.py`: Effective-time helpers shared with analysis logic
 
 To contribute:
 1. Fork the repository
