@@ -8,6 +8,9 @@ tests/outputs
 # Ignore actual data files in examples directory
 examples/
 
+# ignore the agent planning
+agent_planning/
+
 # ignore plans this may be real data that shouldn't be on git
 plans/
 plans/multiple/*.yaml
@@ -179,3 +182,11 @@ cython_debug/
 #.idea/
 
 
+
+# Local agent reference solutions (skill exercises). Do not commit.
+reference/
+
+# Framework telemetry (local-only; emitted by agent_planning/scripts/)
+agent_planning/execution/_telemetry.jsonl
+# Single-pass review ledger (local-only; enforces one review per plan)
+agent_planning/execution/_review_ledger.jsonl

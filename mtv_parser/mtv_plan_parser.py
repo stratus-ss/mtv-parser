@@ -5,6 +5,13 @@ import os
 import yaml
 from clioutput import CLIOutput
 from migration_information import MigrationAnalyzer  # Import the MigrationAnalyzer class
+from since_filter import (
+    chart_cutoff,
+    filter_plan_records,
+    filter_vm_groups,
+    parse_since_date,
+    rebuild_hour_window,
+)
 from visualization import plot_gantt_chart
 
 
@@ -24,6 +31,24 @@ def parse_args() -> argparse.Namespace:
         "--vms-by-date",
         action="store_true",
         help="Print successful VM names grouped by UTC completion date (off by default).",
+    )
+    parser.add_argument(
+        "--since",
+        type=parse_since_date,
+        default=None,
+        help=(
+            "Limit reports and the Gantt chart to migrations that overlap this UTC date "
+            "through the latest data (YYYY-MM-DD)."
+        ),
+    )
+    parser.add_argument(
+        "--gantt-since",
+        type=parse_since_date,
+        default=None,
+        help=(
+            "Limit only the Gantt chart to migrations that overlap this UTC date (YYYY-MM-DD). "
+            "Text reports stay on the full set when this flag is used alone."
+        ),
     )
     return parser.parse_args()
 
@@ -74,10 +99,8 @@ def load_multiple_plans(directory: str) -> dict:
     return merged_data
 
 
-def main() -> None:
-    args = parse_args()
-
-    # Load YAML data
+def _load_mtv_plan_data() -> dict:
+    """Load plan YAML from plans/multiple, or the single-file fallback."""
     multiple_dir = "./plans/multiple"
     single_file = "./plans/single/vm-plan-sample.yaml"
 
@@ -90,68 +113,61 @@ def main() -> None:
         ]
 
     if len(yaml_files) > 1:
-        mtv_plan_data = load_multiple_plans(multiple_dir)
-    elif len(yaml_files) == 1:
-        mtv_plan_data = load_plan_file(os.path.join(multiple_dir, yaml_files[0]))
-    elif os.path.isfile(single_file):
-        mtv_plan_data = load_plan_file(single_file)
-    else:
-        raise FileNotFoundError(
-            "No plan YAML found. Put one or more .yaml/.yml files in "
-            f"{multiple_dir}/, or provide {single_file}."
-        )
-
-    # Initialize CLI output and MigrationAnalyzer
-    output = CLIOutput()
-    migration_analyzer = MigrationAnalyzer()
-
-    # Initialize dictionary to hold VM migration data
-    all_vms = defaultdict(list)
-
-    # Process migration success info
-    successful_migrations, failed_migrations, migration_window_for_plan = migration_analyzer.get_migration_success_info(
-        mtv_plan_data, all_vms
+        return load_multiple_plans(multiple_dir)
+    if len(yaml_files) == 1:
+        return load_plan_file(os.path.join(multiple_dir, yaml_files[0]))
+    if os.path.isfile(single_file):
+        return load_plan_file(single_file)
+    raise FileNotFoundError(
+        "No plan YAML found. Put one or more .yaml/.yml files in "
+        f"{multiple_dir}/, or provide {single_file}."
     )
 
-    
-    # Check if migration_window_for_plan has data
-    if not migration_window_for_plan:
-        output.write("No migration data available. Please ensure your YAML files contain completed migrations.\n")
-        output.close()
-        return
-    
-    # Ensure migration window has all hours filled
-    current_hour = min(migration_window_for_plan.keys()).replace(minute=0, second=0, microsecond=0)
-    end_time = max(migration_window_for_plan.keys()).replace(minute=0, second=0, microsecond=0)
 
+def _apply_since(
+    args: argparse.Namespace,
+    analyzer: MigrationAnalyzer,
+    all_vms: dict,
+    successful_migrations: list,
+    failed_migrations: list,
+    migration_window: dict,
+) -> tuple[dict, list, list, dict]:
+    """Filter reports when --since is set. A missing cutoff leaves inputs unchanged."""
+    if args.since is not None:
+        all_vms = filter_vm_groups(all_vms, args.since)
+        successful_migrations = filter_plan_records(successful_migrations, args.since)
+        failed_migrations = filter_plan_records(failed_migrations, args.since)
+        rebuilt = rebuild_hour_window(analyzer, all_vms)
+        if rebuilt:
+            migration_window = rebuilt
+    return all_vms, successful_migrations, failed_migrations, migration_window
+
+
+def _fill_missing_hours(migration_window: dict) -> None:
+    """Insert zero counts for hours between the first and last window key."""
+    current_hour = min(migration_window.keys()).replace(minute=0, second=0, microsecond=0)
+    end_time = max(migration_window.keys()).replace(minute=0, second=0, microsecond=0)
     while current_hour <= end_time:
-        if current_hour not in migration_window_for_plan.keys():
-            migration_window_for_plan[current_hour] = 0
+        if current_hour not in migration_window:
+            migration_window[current_hour] = 0
         current_hour += timedelta(hours=1)
 
-    # Sort migration window by time
-    sorted_migration_window_for_plan = dict(sorted(migration_window_for_plan.items()))
 
-    # Find peak time and max concurrent migrations
-    peak_time = ""
+def _peak_concurrency(migration_window: dict) -> tuple:
+    """Return (peak_time, max_concurrent). peak_time is a datetime or empty string."""
+    peak_time: object = ""
     max_concurrent = 0
-    for entry in migration_window_for_plan.keys():
-        if migration_window_for_plan[entry] > max_concurrent:
-            max_concurrent = migration_window_for_plan[entry]
+    for entry, count in migration_window.items():
+        if count > max_concurrent:
+            max_concurrent = count
             peak_time = entry
+    return peak_time, max_concurrent
 
-    # Analyze concurrency
-    migration_window_list = migration_analyzer.find_deployment_windows(sorted_migration_window_for_plan)
-    concurrency_data = migration_analyzer.analyze_concurrent_migrations(
-        migration_window_list, max_concurrent, peak_time
-    )
 
-    # Prepare migration reports using union-of-intervals hours from the plan records
-    success_migration_report = migration_analyzer.prepare_migration_information(successful_migrations)
-
+def _write_migration_reports(output, analyzer, successful_migrations, failed_migrations, all_vms, concurrency_data) -> None:
+    success_migration_report = analyzer.prepare_migration_information(successful_migrations)
     if failed_migrations:
-        failed_migration_report = migration_analyzer.prepare_migration_information(failed_migrations)
-        # Print header with failed report, then successful without header
+        failed_migration_report = analyzer.prepare_migration_information(failed_migrations)
         output.write(output.migration_output(failed_migration_report, "failed", include_main_header=True))
         output.write(("\n\n"))
         output.write(("\n\n"))
@@ -161,7 +177,7 @@ def main() -> None:
         output.write(output.migration_output(success_migration_report, "successful", include_main_header=True))
         output.write(("\n\n"))
 
-    vm_summary = migration_analyzer.prepare_vm_inform(all_vms)
+    vm_summary = analyzer.prepare_vm_inform(all_vms)
     if vm_summary:
         output.write(output.vm_migration_output(vm_summary))
         output.write(("\n\n"))
@@ -169,15 +185,61 @@ def main() -> None:
     output.write(output.operating_system_report(all_vms))
     output.write(("\n\n"))
     output.write(output.generate_concurrency_report(concurrency_data))
+
+
+def _write_gantt(args, output, all_vms) -> None:
+    if not args.gantt:
+        return
+    cutoff = chart_cutoff(args.since, args.gantt_since)
+    chart_vms = filter_vm_groups(all_vms, cutoff) if cutoff is not None else all_vms
+    chart_path = plot_gantt_chart(chart_vms, output_path=args.gantt_output)
+    if chart_path:
+        output.write(f"\nGantt chart saved to {chart_path}\n")
+    else:
+        output.write("\nNo VM timing data available for Gantt chart.\n")
+
+
+def main() -> None:
+    args = parse_args()
+    mtv_plan_data = _load_mtv_plan_data()
+    output = CLIOutput()
+    migration_analyzer = MigrationAnalyzer()
+    all_vms = defaultdict(list)
+
+    successful_migrations, failed_migrations, migration_window_for_plan = migration_analyzer.get_migration_success_info(
+        mtv_plan_data, all_vms
+    )
+    all_vms, successful_migrations, failed_migrations, migration_window_for_plan = _apply_since(
+        args,
+        migration_analyzer,
+        all_vms,
+        successful_migrations,
+        failed_migrations,
+        migration_window_for_plan,
+    )
+
+    if not migration_window_for_plan:
+        output.write("No migration data available. Please ensure your YAML files contain completed migrations.\n")
+        output.close()
+        return
+
+    _fill_missing_hours(migration_window_for_plan)
+    sorted_migration_window_for_plan = dict(sorted(migration_window_for_plan.items()))
+    peak_time, max_concurrent = _peak_concurrency(migration_window_for_plan)
+    migration_window_list = migration_analyzer.find_deployment_windows(sorted_migration_window_for_plan)
+    concurrency_data = migration_analyzer.analyze_concurrent_migrations(
+        migration_window_list, max_concurrent, peak_time
+    )
+    _write_migration_reports(
+        output,
+        migration_analyzer,
+        successful_migrations,
+        failed_migrations,
+        all_vms,
+        concurrency_data,
+    )
     _maybe_write_vms_by_date(args, output, migration_analyzer, all_vms)
-
-    if args.gantt:
-        chart_path = plot_gantt_chart(all_vms, output_path=args.gantt_output)
-        if chart_path:
-            output.write(f"\nGantt chart saved to {chart_path}\n")
-        else:
-            output.write("\nNo VM timing data available for Gantt chart.\n")
-
+    _write_gantt(args, output, all_vms)
     output.close()
 
 

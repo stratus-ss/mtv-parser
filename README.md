@@ -284,7 +284,7 @@ Place two or more `.yaml` / `.yml` files in `plans/multiple/`. They are merged i
 - Calculates and organizes overall migration statistics
 - Computes various statistics like average time, total VMs, disk size
 - Identifies the longest migration plan and calculates cold/warm migration counts
-- Prefers union-of-interval hours from plan records when computing aggregate GB/hour
+- Prefers union-of-interval hours from plan records when computing aggregate GiB/hour
 
 **`prepare_vm_inform(all_vms, concurrent_migration_hours=0)`**
 - VM-level stats for successfully migrated VMs (longest/shortest, disk size, aggregate speed)
@@ -337,14 +337,14 @@ Number of Cold Migrated VMs:                     2
 Number of Warm Migrated VMs:                     17
 Plan with longest runtime:                       105289-group-3
 Longest runtime in minutes:                      430.3
-Total disk size in longest plan (GB):            532.0
-Transferred data per hour in longest plan (GB):  1.2
+Total disk size in longest plan (GiB):            532.0
+Longest plan GiB/hour over plan runtime:          1.2
 Shortest runtime in minutes:                     9.5
 Average runtime in minutes:                      275.3
-Average disk size (GB):                          701.6
-Aggregate transfer per hour (GB):                152.9
-Total Disk Size Migrated (GB):                   4911.0
-Total Migration Hours (approx):                  10.00
+Average disk size (GiB):                          701.6
+Approximate plan size (GiB) completed in an hour: 152.9
+Total Disk Size Migrated (GiB):                   4911.0
+Hours migrations were running:                   10.00
 
 
 MIGRATED VMS SUMMARY
@@ -361,12 +361,12 @@ OS REPORT
 Report for windows2022srvNext_64Guest:
 --------------------------------------
 Number of VMs:                             3
-Total Disk Size (GB):                    992
+Total Disk Size (GiB):                    992
 
 Report for otherGuest64:
 ------------------------
 Number of VMs:                            16
-Total Disk Size (GB):                   3919
+Total Disk Size (GiB):                   3919
 
 
 
@@ -415,6 +415,8 @@ The analyzer uses the following to determine the true effective migration time:
 4. Falls back to total migration time if no significant drop is detected
 
 The thought here is that while not 100% accurate due to the final copy of RAM to disk, there are many who start a migration plan then walk away and come back hours after the copies have completed. MTV's plan will officially be the entire time until the migration has been cut over. This is inaccurate and skews the metrics badly. By watching for a sharp drop off in precopy time we can "guess" at how long a cutover would have taken as if the cutover happened as soon as the VM had transferred all of the initial data.
+
+"Plan runtime" is one migration's window (precopy drop for warm, started-to-completed for cold). "Approximate plan size (GiB) completed in an hour" is the disk finished during one hour when at least one plan was open. "Disk-copy time (summed)" uses only the `DiskTransfer` / `DiskTransferV2v` step and adds each VM's copy minutes. Disk-copy lines are omitted when `transfer_minutes` is absent. Plan YAML does not say whether the copy was network or storage copy offload.
 
 ### Concurrency Analysis
 

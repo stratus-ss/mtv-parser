@@ -173,6 +173,53 @@ def test_add_migration_attribute(migration_analyzer, test_id, vm, expected_resul
                 }]
             }),
         ),
+        (
+            "copies_positive_disk_transfer",
+            {
+                "linux": {
+                    "name": "vm-a",
+                    "disk_size": 1024,
+                    "start_time": datetime.datetime(2024, 7, 25, 10, 0, 0),
+                    "duration": 10.0,
+                }
+            },
+            defaultdict(list),
+            60.0,
+            defaultdict(list, {
+                "linux": [{
+                    "name": "vm-a",
+                    "disk_size": 1024,
+                    "start_time": datetime.datetime(2024, 7, 25, 10, 0, 0),
+                    "end_time": datetime.datetime(2024, 7, 25, 11, 0, 0),
+                    "duration": 60.0,
+                    "succeeded": True,
+                    "transfer_minutes": 10.0,
+                }]
+            }),
+        ),
+        (
+            "skips_zero_disk_transfer",
+            {
+                "linux": {
+                    "name": "vm-a",
+                    "disk_size": 1024,
+                    "start_time": datetime.datetime(2024, 7, 25, 10, 0, 0),
+                    "duration": 0,
+                }
+            },
+            defaultdict(list),
+            60.0,
+            defaultdict(list, {
+                "linux": [{
+                    "name": "vm-a",
+                    "disk_size": 1024,
+                    "start_time": datetime.datetime(2024, 7, 25, 10, 0, 0),
+                    "end_time": datetime.datetime(2024, 7, 25, 11, 0, 0),
+                    "duration": 60.0,
+                    "succeeded": True,
+                }]
+            }),
+        ),
     ],
 )
 def test_add_to_dict(migration_analyzer, test_id, vm_information, dict_to_update, effective_duration, expected_result):
@@ -546,7 +593,7 @@ def test_calculate_active_migration_hours(migration_analyzer):
 
 
 def test_calculate_active_migration_hours_keeps_fractional_precision(migration_analyzer):
-    """Hours must not be rounded before they are used as a GB/hour divisor."""
+    """Hours must not be rounded before they are used as a GiB/hour divisor."""
     mtv_plan_data = {
         "items": [
             {
@@ -852,16 +899,16 @@ def test_calculate_vm_totals(migration_analyzer, test_id, vms, expected_result):
                 "total_vms": 2,
                 "max_minutes": 120.0,
                 "min_minutes": 60.0,
-                "longest_vm_name": "vm2",
+                "longest_running_vm_name": "vm2",
                 "shortest_vm_name": "vm1",
                 "largest_vm_name": "vm2",
-                "largest_vm_disk_gb": 4.0,
+                "largest_vm_disk_GiB": 4.0,
                 "smallest_vm_name": "vm1",
-                "smallest_vm_disk_gb": 2.0,
+                "smallest_vm_disk_GiB": 2.0,
                 "average_time_mins": 90.0,
                 "total_disk_size_gb": 6.0,
                 "total_migration_hours": 3.0,
-                "aggregate_speed_gb_per_hr": 2.0,
+                "aggregate_speed_GiB_per_hr": 2.0,
             },
         ),
         (
@@ -889,7 +936,7 @@ def test_calculate_vm_totals(migration_analyzer, test_id, vms, expected_result):
                 "total_vms": 2,
                 "total_disk_size_gb": 20.0,
                 "total_migration_hours": 2.0,
-                "aggregate_speed_gb_per_hr": 10.0,
+                "aggregate_speed_GiB_per_hr": 10.0,
             },
         ),
         (
@@ -914,6 +961,37 @@ def test_calculate_vm_totals(migration_analyzer, test_id, vms, expected_result):
             1.0,
             {},
         ),
+        (
+            "disk_copy_rates",
+            {
+                "linux": [
+                    {
+                        "name": "slow",
+                        "disk_size": 2048,
+                        "start_time": datetime.datetime(2024, 7, 25, 10, 0, 0),
+                        "duration": 120.0,
+                        "transfer_minutes": 60.0,
+                        "succeeded": True,
+                    },
+                    {
+                        "name": "fast",
+                        "disk_size": 1024,
+                        "start_time": datetime.datetime(2024, 7, 25, 12, 0, 0),
+                        "duration": 90.0,
+                        "transfer_minutes": 10.0,
+                        "succeeded": True,
+                    },
+                ]
+            },
+            0.0,
+            {
+                "longest_transfer_vm_name": "slow",
+                "longest_transfer_minutes": 60.0,
+                "average_transfer_minutes": 35.0,
+                "transfer_gb_per_hour": 2.6,
+                "longest_transfer_gb_per_hour": 2.0,
+            },
+        ),
     ],
 )
 def test_prepare_vm_inform(migration_analyzer, test_id, all_vms, concurrent_hours, expected_result):
@@ -929,3 +1007,59 @@ def test_prepare_vm_inform(migration_analyzer, test_id, all_vms, concurrent_hour
                 assert abs(actual_value - expected_value) < 0.01, f"{key}: expected {expected_value}, got {actual_value}"
             else:
                 assert actual_value == expected_value, f"{key}: expected {expected_value}, got {actual_value}"
+
+
+def test_prepare_vm_inform_omits_disk_copy_without_transfer_minutes(migration_analyzer):
+    all_vms = {
+        "linux": [
+            {
+                "name": "old",
+                "disk_size": 1024,
+                "start_time": datetime.datetime(2024, 7, 25, 10, 0, 0),
+                "duration": 60.0,
+                "succeeded": True,
+            }
+        ]
+    }
+    vm_info = migration_analyzer.prepare_vm_inform(all_vms, 1.0)
+    assert "longest_transfer_minutes" not in vm_info
+    assert "average_transfer_minutes" not in vm_info
+    assert "transfer_gb_per_hour" not in vm_info
+
+
+def test_vm_summary_hides_transfer_lines_until_keys_exist():
+    from mtv_parser.clioutput import CLIOutput
+
+    output = CLIOutput()
+    base = {
+        "total_vms": 1,
+        "longest_running_vm_name": "vm-a",
+        "max_minutes": 60.0,
+        "largest_vm_name": "vm-a",
+        "largest_vm_disk_GiB": 1.0,
+        "smallest_vm_name": "vm-a",
+        "smallest_vm_disk_GiB": 1.0,
+        "longest_vm_transferspeed": 1.0,
+        "shortest_vm_name": "vm-a",
+        "min_minutes": 60.0,
+        "average_time_mins": 60.0,
+        "average_disk_size_GiB": 1.0,
+        "aggregate_speed_GiB_per_hr": 1.0,
+        "total_disk_size_gb": 1.0,
+        "total_migration_hours": 1.0,
+    }
+    plain = output.vm_migration_output(base)
+    assert "disk-copy" not in plain
+    with_transfer = dict(base)
+    with_transfer.update(
+        {
+            "longest_transfer_minutes": 10.0,
+            "longest_transfer_gb_per_hour": 6.0,
+            "average_transfer_minutes": 10.0,
+            "transfer_gb_per_hour": 6.0,
+        }
+    )
+    text = output.vm_migration_output(with_transfer)
+    assert "Longest VM disk-copy minutes:" in text
+    assert "Average disk transfer minutes:" in text
+    assert "All VMs GiB/hour over disk-copy time (summed):" in text
