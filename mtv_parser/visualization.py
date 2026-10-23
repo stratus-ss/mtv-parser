@@ -105,6 +105,10 @@ def plot_gantt_chart(data: dict, output_path: str = "charts/migration_gantt_char
         for task in tasks:
             start = task.get("start_time")
             end = task.get("end_time")
+            # TODO(range): Leave bar times unclipped. The axis follows the real min start and max end,
+            # so a kept VM can extend outside the requested window. Frame the axis only if the chart
+            # should not draw past the range. Tasks with no end_time are skipped here even when the
+            # text report keeps them.
             if not isinstance(start, datetime) or not isinstance(end, datetime):
                 continue
             if end <= start:

@@ -50,6 +50,26 @@ def parse_args() -> argparse.Namespace:
             "Text reports stay on the full set when this flag is used alone."
         ),
     )
+
+    parser.add_argument(
+        "--until",
+        type=parse_since_date,
+        default=None,
+        help=(
+            "Limit reports and the Gantt chart to migrations that end on or before this UTC date "
+            "until the date specified."
+        ),
+    )
+    parser.add_argument(
+        "--gantt-until",
+        type=parse_since_date,
+        default=None,
+        help=(
+            "Limit only the Gantt chart to migrations that end on or before this UTC date (YYYY-MM-DD). "
+            "Text reports stay on the full set when this flag is used alone."
+        ),
+    )
+    
     return parser.parse_args()
 
 
@@ -133,10 +153,12 @@ def _apply_since(
     migration_window: dict,
 ) -> tuple[dict, list, list, dict]:
     """Filter reports when --since is set. A missing cutoff leaves inputs unchanged."""
+    # TODO(range): Filter when either report bound is set, not only when --since is set.
+    # Pass the report window into filter_vm_groups and filter_plan_records.
     if args.since is not None:
-        all_vms = filter_vm_groups(all_vms, args.since)
-        successful_migrations = filter_plan_records(successful_migrations, args.since)
-        failed_migrations = filter_plan_records(failed_migrations, args.since)
+        all_vms = filter_vm_groups(all_vms, args.since, args.until)
+        successful_migrations = filter_plan_records(successful_migrations, args.since, args.until)
+        failed_migrations = filter_plan_records(failed_migrations, args.since, args.until)
         rebuilt = rebuild_hour_window(analyzer, all_vms)
         if rebuilt:
             migration_window = rebuilt
@@ -190,8 +212,11 @@ def _write_migration_reports(output, analyzer, successful_migrations, failed_mig
 def _write_gantt(args, output, all_vms) -> None:
     if not args.gantt:
         return
-    cutoff = chart_cutoff(args.since, args.gantt_since)
-    chart_vms = filter_vm_groups(all_vms, cutoff) if cutoff is not None else all_vms
+    cutoff_start, cutoff_end = chart_cutoff(args.since, args.until, args.gantt_since, args.gantt_until)
+    if cutoff_start is not None and cutoff_end is not None:
+        chart_vms = filter_vm_groups(all_vms, cutoff_start, cutoff_end)
+    else:
+        chart_vms = all_vms
     chart_path = plot_gantt_chart(chart_vms, output_path=args.gantt_output)
     if chart_path:
         output.write(f"\nGantt chart saved to {chart_path}\n")
@@ -201,6 +226,7 @@ def _write_gantt(args, output, all_vms) -> None:
 
 def main() -> None:
     args = parse_args()
+    # TODO(range): Validate the report window and the chart window before loading plans.
     mtv_plan_data = _load_mtv_plan_data()
     output = CLIOutput()
     migration_analyzer = MigrationAnalyzer()
@@ -219,6 +245,7 @@ def main() -> None:
     )
 
     if not migration_window_for_plan:
+        # TODO(range): Keep this early return when the report window removes every migration.
         output.write("No migration data available. Please ensure your YAML files contain completed migrations.\n")
         output.close()
         return
