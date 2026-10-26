@@ -1,5 +1,5 @@
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime
 from collections import defaultdict
 
 # Import the standalone function and MigrationAnalyzer class from production code
@@ -131,7 +131,7 @@ def test_calculate_effective_migration_time(test_id, vm, entry, expected_time):
 
 
 @pytest.mark.parametrize(
-    "test_id, vm, effective_duration, expected_information",
+    "test_id, vm, vm_started, vm_completed, expected_information",
     [
         # Happy path: DiskTransfer phase present
         (
@@ -150,13 +150,16 @@ def test_calculate_effective_migration_time(test_id, vm, entry, expected_time):
                 "name": "test_vm",
                 "migration_type": "cold",
             },
-            60.0,
+            "2024-07-25T10:00:00",
+            "2024-07-25T11:00:00",
             {
                 "linux": {
                     "name": "test_vm",
                     "disk_size": 1024,
                     "start_time": datetime(2024, 7, 25, 10, 0, 0),
+                    "end_time": datetime(2024, 7, 25, 11, 0, 0),
                     "duration": 60.0,
+                    "transfer_minutes": 60.0,
                     "migration_type": "cold",
                     "migration_window": [
                         datetime(2024, 7, 25, 10, 0, 0),
@@ -179,12 +182,14 @@ def test_calculate_effective_migration_time(test_id, vm, entry, expected_time):
                 "name": "test_vm",
                 "migration_type": "cold",
             },
-            0.0,
+            "",
+            "",
             {
                 "linux": {
                     "name": "test_vm",
                     "disk_size": 0,
-                    "start_time": timedelta(seconds=0),
+                    "start_time": None,
+                    "end_time": None,
                     "duration": 0.0,
                     "migration_type": "cold",
                     "migration_window": None
@@ -193,9 +198,9 @@ def test_calculate_effective_migration_time(test_id, vm, entry, expected_time):
         ),
     ],
 )
-def test_extract_vm_information(migration_analyzer, test_id, vm, effective_duration, expected_information):
+def test_extract_vm_information(migration_analyzer, test_id, vm, vm_started, vm_completed, expected_information):
     """Test extract_vm_information using current production MigrationAnalyzer class."""
-    actual_information = migration_analyzer.extract_vm_information(vm, effective_duration)
+    actual_information = migration_analyzer.extract_vm_information(vm, vm_started, vm_completed)
     assert actual_information == expected_information
 
 

@@ -149,7 +149,7 @@ def test_add_migration_attribute(migration_analyzer, test_id, vm, expected_resul
 
 # Tests for add_to_dict
 @pytest.mark.parametrize(
-    "test_id, vm_information, dict_to_update, effective_duration, expected_result",
+    "test_id, vm_information, dict_to_update, expected_result",
     [
         (
             "valid_data",
@@ -158,10 +158,11 @@ def test_add_migration_attribute(migration_analyzer, test_id, vm, expected_resul
                     "name": "test_vm",
                     "disk_size": 1024,
                     "start_time": datetime.datetime(2024, 7, 25, 10, 0, 0),
+                    "end_time": datetime.datetime(2024, 7, 25, 11, 0, 0),
+                    "duration": 60.0,
                 }
             },
             defaultdict(list),
-            60.0,
             defaultdict(list, {
                 "linux": [{
                     "name": "test_vm",
@@ -180,11 +181,12 @@ def test_add_migration_attribute(migration_analyzer, test_id, vm, expected_resul
                     "name": "vm-a",
                     "disk_size": 1024,
                     "start_time": datetime.datetime(2024, 7, 25, 10, 0, 0),
-                    "duration": 10.0,
+                    "end_time": datetime.datetime(2024, 7, 25, 11, 0, 0),
+                    "duration": 60.0,
+                    "transfer_minutes": 10.0,
                 }
             },
             defaultdict(list),
-            60.0,
             defaultdict(list, {
                 "linux": [{
                     "name": "vm-a",
@@ -204,11 +206,12 @@ def test_add_migration_attribute(migration_analyzer, test_id, vm, expected_resul
                     "name": "vm-a",
                     "disk_size": 1024,
                     "start_time": datetime.datetime(2024, 7, 25, 10, 0, 0),
-                    "duration": 0,
+                    "end_time": datetime.datetime(2024, 7, 25, 11, 0, 0),
+                    "duration": 60.0,
+                    "transfer_minutes": 0,
                 }
             },
             defaultdict(list),
-            60.0,
             defaultdict(list, {
                 "linux": [{
                     "name": "vm-a",
@@ -222,8 +225,8 @@ def test_add_migration_attribute(migration_analyzer, test_id, vm, expected_resul
         ),
     ],
 )
-def test_add_to_dict(migration_analyzer, test_id, vm_information, dict_to_update, effective_duration, expected_result):
-    actual_result = migration_analyzer.add_to_dict(vm_information, dict_to_update, effective_duration)
+def test_add_to_dict(migration_analyzer, test_id, vm_information, dict_to_update, expected_result):
+    actual_result = migration_analyzer.add_to_dict(vm_information, dict_to_update)
     assert actual_result == expected_result
 
 # Tests for get_avg_concurrent_count
@@ -262,7 +265,7 @@ def test_get_avg_concurrent_count(migration_analyzer, test_id, hourly_counts, ex
 
 # Tests for extract_vm_information
 @pytest.mark.parametrize(
-    "test_id, vm, effective_duration, expected_information",
+    "test_id, vm, vm_started, vm_completed, expected_information",
     [
         (
             "disktransfer_present",
@@ -281,22 +284,64 @@ def test_get_avg_concurrent_count(migration_analyzer, test_id, hourly_counts, ex
                 "migration_type": "cold",
                 "conditions": []
             },
-            60.0,
+            "2024-07-25T10:00:00",
+            "2024-07-25T11:00:00",
             {
                 "linux": {
                     "name": "test_vm",
                     "disk_size": 1024,
                     "start_time": datetime.datetime(2024, 7, 25, 10, 0, 0),
+                    "end_time": datetime.datetime(2024, 7, 25, 11, 0, 0),
                     "duration": 60.0,
+                    "transfer_minutes": 60.0,
                     "migration_type": "cold",
                     "migration_window": [datetime.datetime(2024, 7, 25, 10, 0, 0), datetime.datetime(2024, 7, 25, 11, 0, 0)]
                 }
             },
         ),
+        (
+            "disk_copy_43m21s",
+            {
+                "pipeline": [
+                    {
+                        "name": "DiskTransfer",
+                        "started": "2026-10-09T17:15:24",
+                        "completed": "2026-10-09T17:58:45",
+                        "progress": {"total": 1024},
+                        "phase": "Completed",
+                    }
+                ],
+                "operatingSystem": "linux",
+                "name": "longvm",
+                "migration_type": "cold",
+                "conditions": [],
+            },
+            "2026-10-09T17:13:19",
+            "2026-10-09T18:17:29",
+            {
+                "linux": {
+                    "name": "longvm",
+                    "disk_size": 1024,
+                    "start_time": datetime.datetime(2026, 10, 9, 17, 13, 19),
+                    "end_time": datetime.datetime(2026, 10, 9, 18, 17, 29),
+                    "duration": (
+                        datetime.datetime(2026, 10, 9, 18, 17, 29)
+                        - datetime.datetime(2026, 10, 9, 17, 13, 19)
+                    ).total_seconds()
+                    / 60,
+                    "transfer_minutes": 2601 / 60,
+                    "migration_type": "cold",
+                    "migration_window": [
+                        datetime.datetime(2026, 10, 9, 17, 0, 0),
+                        datetime.datetime(2026, 10, 9, 18, 0, 0),
+                    ],
+                }
+            },
+        ),
     ],
 )
-def test_extract_vm_information(migration_analyzer, test_id, vm, effective_duration, expected_information):
-    actual_information = migration_analyzer.extract_vm_information(vm, effective_duration)
+def test_extract_vm_information(migration_analyzer, test_id, vm, vm_started, vm_completed, expected_information):
+    actual_information = migration_analyzer.extract_vm_information(vm, vm_started, vm_completed)
     assert actual_information == expected_information
 
 # Tests for find_deployment_windows
@@ -546,7 +591,7 @@ def test_analyze_concurrent_migrations(migration_analyzer, test_id, migration_pl
             {
                 "number_of_migrations": 2,
                 "total_migration_hrs": 3.0,
-                "average_transfer_speed": 1.33,
+                "average_transfer_speed": 1.3,
                 "longest_transfer_speed": 1.0,
                 "cold_migrations": 2,
                 "warm_migrations": 0,
@@ -739,10 +784,108 @@ def test_get_migration_success_info(migration_analyzer):
     assert successful_migrations[0]["name"] == "plan1"
     assert failed_migrations[0]["name"] == "plan2"
     
-    # Check migration windows
-    assert len(migration_window) >= 3  # Should have at least 3 hours
+    # Check migration windows. plan1's own window is 12:00 and 13:00.
+    # The shared hour map also includes plan2's 14:00, so its length is 3.
+    assert successful_migrations[0]["total_duration_mins"] == 60.0
+    assert successful_migrations[0]["migration_window"] == [
+        datetime.datetime(2025, 3, 22, 12, 0, 0),
+        datetime.datetime(2025, 3, 22, 13, 0, 0),
+    ]
+    assert len(migration_window) == 3
+    assert datetime.datetime(2025, 3, 22, 12, 0, 0) in migration_window
+    assert datetime.datetime(2025, 3, 22, 13, 0, 0) in migration_window
     assert successful_migrations[0]["migration_type"] == "warm"
     assert failed_migrations[0]["migration_type"] == "cold"
+
+
+def _completed_disk_phase(started: str, completed: str) -> dict:
+    return {
+        "name": "DiskTransfer",
+        "phase": "Completed",
+        "started": started,
+        "completed": completed,
+        "progress": {"total": 1024},
+    }
+
+
+def test_warm_summary_ignores_precopy_span(migration_analyzer):
+    plan = {
+        "metadata": {"name": "warm-precopy"},
+        "spec": {"vms": ["warm-vm"]},
+        "status": {
+            "migration": {
+                "started": "2026-10-15T19:49:10",
+                "completed": "2026-10-15T20:03:53",
+                "vms": [
+                    {
+                        "name": "warm-vm",
+                        "operatingSystem": "linux",
+                        "warm": {
+                            "precopies": [
+                                {
+                                    "start": "2026-10-15T17:00:00Z",
+                                    "end": "2026-10-15T20:00:00Z",
+                                }
+                            ]
+                        },
+                        "conditions": [{"type": "Succeeded"}],
+                        "pipeline": [_completed_disk_phase("2026-10-15T17:43:56", "2026-10-15T18:00:00")],
+                    }
+                ],
+            }
+        },
+    }
+    all_vms = defaultdict(list)
+    successful_migrations, failed_migrations, _migration_window = migration_analyzer.get_migration_success_info(
+        {"items": [plan]}, all_vms
+    )
+    assert failed_migrations == []
+    assert successful_migrations[0]["total_duration_mins"] == 883 / 60
+    assert successful_migrations[0]["end_time"] == datetime.datetime(2026, 10, 15, 20, 3, 53)
+    record = all_vms["linux"][0]
+    assert record["duration"] == 883 / 60
+    assert record["end_time"] == datetime.datetime(2026, 10, 15, 20, 3, 53)
+
+
+def test_two_vm_plan_keeps_each_vm_clock(migration_analyzer):
+    plan = {
+        "metadata": {"name": "two-vm"},
+        "spec": {"vms": ["short", "long"]},
+        "status": {
+            "migration": {
+                "started": "2026-10-03T03:32:58",
+                "completed": "2026-10-03T04:31:42",
+                "vms": [
+                    {
+                        "name": "short",
+                        "operatingSystem": "linux",
+                        "started": "2026-10-03T03:32:58",
+                        "completed": "2026-10-03T04:11:57",
+                        "conditions": [{"type": "Succeeded"}],
+                        "pipeline": [_completed_disk_phase("2026-10-03T03:40:00", "2026-10-03T04:00:00")],
+                    },
+                    {
+                        "name": "long",
+                        "operatingSystem": "linux",
+                        "started": "2026-10-03T03:32:58",
+                        "completed": "2026-10-03T04:31:42",
+                        "conditions": [{"type": "Succeeded"}],
+                        "pipeline": [_completed_disk_phase("2026-10-03T03:40:00", "2026-10-03T04:20:00")],
+                    },
+                ],
+            }
+        },
+    }
+    all_vms = defaultdict(list)
+    successful_migrations, _failed, _migration_window = migration_analyzer.get_migration_success_info(
+        {"items": [plan]}, all_vms
+    )
+    by_name = {}
+    for vm in all_vms["linux"]:
+        by_name[vm["name"]] = vm
+    assert by_name["short"]["duration"] == 2339 / 60
+    assert by_name["long"]["duration"] == 3524 / 60
+    assert successful_migrations[0]["total_duration_mins"] == 3524 / 60
 
 # Tests for _filter_successful_vms
 @pytest.mark.parametrize(
@@ -988,8 +1131,9 @@ def test_calculate_vm_totals(migration_analyzer, test_id, vms, expected_result):
                 "longest_transfer_vm_name": "slow",
                 "longest_transfer_minutes": 60.0,
                 "average_transfer_minutes": 35.0,
-                "transfer_gb_per_hour": 2.6,
-                "longest_transfer_gb_per_hour": 2.0,
+                    "transfer_gb_per_hour": 2.6,
+                    "longest_transfer_GiB_per_hour": 6.0,
+                    "longest_transfer_gb_per_hour": 6.0,
             },
         ),
     ],
@@ -1007,6 +1151,34 @@ def test_prepare_vm_inform(migration_analyzer, test_id, all_vms, concurrent_hour
                 assert abs(actual_value - expected_value) < 0.01, f"{key}: expected {expected_value}, got {actual_value}"
             else:
                 assert actual_value == expected_value, f"{key}: expected {expected_value}, got {actual_value}"
+
+
+def test_prepare_vm_inform_picks_highest_copy_rate(migration_analyzer):
+    all_vms = {
+        "linux": [
+            {
+                "name": "slow",
+                "disk_size": 24160256,
+                "duration": 64.2,
+                "transfer_minutes": 2601 / 60,
+                "start_time": datetime.datetime(2026, 10, 9, 17, 13, 19),
+                "succeeded": True,
+            },
+            {
+                "name": "fast",
+                "disk_size": 31960064,
+                "duration": 60.5,
+                "transfer_minutes": 2473 / 60,
+                "start_time": datetime.datetime(2026, 10, 9, 17, 13, 19),
+                "succeeded": True,
+            },
+        ]
+    }
+    vm_info = migration_analyzer.prepare_vm_inform(all_vms)
+    assert vm_info["longest_transfer_GiB_per_hour"] == 31211 * 3600 / 2473
+    assert vm_info["longest_transfer_gb_per_hour"] == 31211 * 3600 / 2473
+    assert vm_info["longest_transfer_minutes"] == 2601 / 60
+    assert vm_info["longest_running_vm_name"] == "slow"
 
 
 def test_prepare_vm_inform_omits_disk_copy_without_transfer_minutes(migration_analyzer):
@@ -1063,3 +1235,36 @@ def test_vm_summary_hides_transfer_lines_until_keys_exist():
     assert "Longest VM disk-copy minutes:" in text
     assert "Average disk transfer minutes:" in text
     assert "All VMs GiB/hour over disk-copy time (summed):" in text
+
+
+def test_open_vm_stays_out_of_all_vms(migration_analyzer):
+    plan = {
+        "metadata": {"name": "open-plan"},
+        "spec": {"vms": ["still-running"]},
+        "status": {
+            "migration": {
+                "started": "2026-09-26T10:00:00",
+                "vms": [
+                    {
+                        "name": "still-running",
+                        "operatingSystem": "linux",
+                        "started": "2026-09-26T10:00:00",
+                        "conditions": [{"type": "Running"}],
+                        "pipeline": [_completed_disk_phase("2026-09-26T10:00:00", "2026-09-26T10:30:00")],
+                    }
+                ],
+            }
+        },
+    }
+    all_vms = defaultdict(list)
+    open_vms = defaultdict(list)
+    successful_migrations, failed_migrations, _migration_window = migration_analyzer.get_migration_success_info(
+        {"items": [plan]}, all_vms, open_vms
+    )
+    assert successful_migrations == []
+    assert failed_migrations == []
+    assert len(all_vms) == 0
+    record = open_vms["linux"][0]
+    assert record["name"] == "still-running"
+    assert record["start_time"] == datetime.datetime(2026, 9, 26, 10, 0, 0)
+    assert record["end_time"] is None

@@ -18,6 +18,7 @@ Previous to Sept 2026, this project was maintained and written by the author. Po
 - **Visualization:** Optional Gantt chart PNG (`--gantt`) of migration timelines and overlapping migrations
 - **Performance Metrics:** Calculates key indicators like transfer speeds, average durations, and resource efficiency
 - **VMs by completion date:** Optional `--vms-by-date` listing of successful VM names grouped by UTC date
+- **Date filtering:** Optional UTC `YYYY-MM-DD` window flags (`--since` / `--until` for reports and chart; `--gantt-since` / `--gantt-until` for chart-only overrides)
 
 ## Installation
 
@@ -220,6 +221,36 @@ python mtv_parser/mtv_plan_parser.py --vms-by-date
 
 Flags can be combined (`--gantt --vms-by-date`).
 
+### Optional date filtering
+
+All date flags use UTC calendar dates in `YYYY-MM-DD` form.
+
+**Report window (`--since`, `--until`)**
+
+Text reports, concurrency, the OS breakdown, optional `--vms-by-date`, and the Gantt chart keep a plan when `status.migration.completed` is inside the window, and keep a VM when that VM's `completed` is inside the window. `--since` is 00:00:00 UTC on that date. `--until` is 23:59:59.999999 UTC on that date. Either flag works alone. A VM that started before `--since` and completed inside the window stays in, on its real start and real end.
+
+When `--until` is set, the report lists VMs that started inside the window and were still going after the end of that day. That list appears only for `--until`, and those disks stay outside the totals.
+
+Example (reports):
+
+```
+python mtv_parser/mtv_plan_parser.py --since 2025-03-21
+python mtv_parser/mtv_plan_parser.py --since 2025-03-21 --until 2025-03-25
+```
+
+**Chart window (`--gantt-since`, `--gantt-until`, plus `--gantt`)**
+
+Chart bounds are resolved by `chart_cutoff`: `--gantt-since` / `--gantt-until` override `--since` / `--until` for the PNG only. If you set only a chart start (for example `--gantt-since` without any until), inherited report `--until` is used when present.
+
+The Gantt VM list is filtered when either chart bound is set, using the same completion rule. When both chart bounds are absent, the chart uses the VM set already produced for reports.
+
+Examples:
+
+```
+python mtv_parser/mtv_plan_parser.py --gantt --gantt-since 2025-03-21 --until 2025-03-25
+python mtv_parser/mtv_plan_parser.py --gantt --since 2025-03-21 --until 2025-03-25
+```
+
 ### Single File Analysis
 
 To analyze one file, make sure `plans/multiple/` is empty or does not exist, then put your YAML at:
@@ -243,7 +274,7 @@ Place two or more `.yaml` / `.yml` files in `plans/multiple/`. They are merged i
 - **Historical Analysis:** Track migration performance across different time periods
 
 > [!IMPORTANT]
-> Plan input is selected by what is on disk under `plans/`, not by positional arguments. Optional flags: `--gantt` / `--gantt-output` for a PNG chart, `--vms-by-date` for a UTC-date grouping of successful VMs.
+> Plan input is selected by what is on disk under `plans/`, not by positional arguments. Optional flags: `--gantt` / `--gantt-output` (PNG chart), `--vms-by-date` (UTC completion dates), `--since` / `--until` (report window), `--gantt-since` / `--gantt-until` (chart-only window overrides). All date flags use `YYYY-MM-DD`.
 
 
 ## Module Structure
@@ -254,6 +285,7 @@ Place two or more `.yaml` / `.yml` files in `plans/multiple/`. They are merged i
 | `migration_information.py` | Core class `MigrationAnalyzer` for extracting and analyzing VM migration data |
 | `vm_information.py` | Standalone helpers for effective migration time (also implemented on `MigrationAnalyzer`) |
 | `clioutput.py` | Handles formatting and display of results to the command line |
+| `since_filter.py` | Parses date CLI values; filters VM groups and plan rows; resolves chart vs report windows (`chart_cutoff`) |
 | `visualization.py` | Writes Gantt chart PNGs of migration timelines |
 
 ## Key Methods of MigrationAnalyzer Class
@@ -313,6 +345,8 @@ The `CLIOutput` class provides methods for generating formatted reports:
 - `generate_concurrency_report()`: Produces concurrency analysis reports
 - `vms_by_date_output()`: Optional UTC-date grouping (`--vms-by-date`)
 
+Reports use `tabulate` with titled sections (for example **Overview**, **Effective plan runtime**, **Pipeline timing**, **Totals and throughput**). Metrics inside each section are sorted alphabetically by label.
+
 ### Visualization Module
 
 **`plot_gantt_chart(data, output_path="charts/migration_gantt_chart.png")`**
@@ -322,90 +356,128 @@ The `CLIOutput` class provides methods for generating formatted reports:
 
 ## Example Output
 
-The analyzer produces several reports in one output. Failed plans, if any, are printed first. Successful VM records also produce a **MIGRATED VMS SUMMARY** block. With `--vms-by-date`, a **VMS BY COMPLETION DATE** section is appended.
+The analyzer prints several reports in one run. If any plans failed, a **MIGRATION PLAN REPORT** for failed plans is printed first, then a successful-plan block (without repeating the main header). When there are successful VM records, a **MIGRATED VMS SUMMARY** follows, then **OS REPORT** and **CONCURRENCY REPORT**. With `--vms-by-date`, **VMS BY COMPLETION DATE** is appended. With `--gantt`, a line such as `Gantt chart saved to charts/migration_gantt_chart.png` is printed at the end.
+
+Illustrative excerpt (values are fictional; section layout matches current output):
 
 ```
 MIGRATION PLAN REPORT
 =====================
 
-The number of successful migration plans:        7
------------------------------------------
-The number of vms:                               19
-Number of Warm Migration Plans:                  6
-Number of Cold Migration Plans:                  1
+Overview
+--------
 Number of Cold Migrated VMs:                     2
+Number of Cold Migration Plans:                  1
 Number of Warm Migrated VMs:                     17
-Plan with longest runtime:                       105289-group-3
-Longest runtime in minutes:                      430.3
-Total disk size in longest plan (GiB):            532.0
-Longest plan GiB/hour over plan runtime:          1.2
-Shortest runtime in minutes:                     9.5
+Number of Warm Migration Plans:                  6
+The number of successful migration plans:        7
+The number of vms:                               19
+
+Effective plan runtime
+----------------------
+Average disk size (GiB):                         701.6
 Average runtime in minutes:                      275.3
-Average disk size (GiB):                          701.6
+Highest plan GiB/hour over plan runtime:         1.2
+Longest runtime in minutes:                      430.3
+Plan with longest runtime:                       105289-group-3
+Shortest runtime in minutes:                     9.5
+Total disk size in longest plan (GiB):           532.0
+
+Pipeline timing (plan)
+----------------------
+Average disk transfer minutes per plan:          42.5
+Average plan duration minutes (migration started to completed): 285.0
+
+Totals and throughput
+---------------------
 Approximate plan size (GiB) completed in an hour: 152.9
-Total Disk Size Migrated (GiB):                   4911.0
 Hours migrations were running:                   10.00
+Total Disk Size Migrated (GiB):                  4911.0
 
 
 MIGRATED VMS SUMMARY
 ====================
 
+Overview
+--------
 The number of migrated vms:                      19
-Longest runtime VM:                              example-vm
-Longest runtime in minutes:                      120.0
-...
+
+Effective VM runtime
+--------------------
+Average runtime in minutes:                      118.2
+Longest runtime in minutes:                      430.3
+Longest runtime VM:                              example-vm-long
+Highest VM GiB/hour over plan runtime:           1.2
+Shortest runtime in minutes:                     9.5
+Shortest runtime VM:                             example-vm-short
+
+Disk size
+---------
+Average disk size (GiB):                         258.5
+Largest VM:                                      example-vm-large
+Largest VM disk size (GiB):                      1024.0
+Smallest VM:                                     example-vm-small
+Smallest VM disk size (GiB):                     32.0
+
+Totals and throughput
+---------------------
+Approximate plan size (GiB) completed in an hour: 152.9
+Hours migrations were running:                   10.00
+Total Disk Size Migrated (GiB):                  4911.0
+
 
 OS REPORT
 =========
 
-Report for windows2022srvNext_64Guest:
---------------------------------------
-Number of VMs:                             3
-Total Disk Size (GiB):                    992
-
 Report for otherGuest64:
 ------------------------
-Number of VMs:                            16
-Total Disk Size (GiB):                   3919
+Number of VMs:                                   16
+Total Disk Size (GiB):                           3919.0
 
+Report for windows2022srvNext_64Guest:
+--------------------------------------
+Number of VMs:                                   3
+Total Disk Size (GiB):                           992.0
 
 
 CONCURRENCY REPORT
 ==================
 
-Peak concurrent VMs:                           16
-Peak time:                                     2025-03-21 18:00:00+00:00
-Average concurrent VMs:                        10
-
+Peak concurrent VMs:                             16
+Peak time:                                       2025-03-21 18:00:00+00:00
+Average concurrent VMs:                          10
 
 Maximum concurrent VMs by OS type:
 ----------------------------------
-
+ windows2022srvNext_64Guest:                      3
+ otherGuest64:                                    13
 
 Hourly concurrent VMs for Migration Window 1:
 ---------------------------------------------
-2025-03-21 15:00:                              5 VMs
-2025-03-21 16:00:                              6 VMs
-2025-03-21 17:00:                              6 VMs
-2025-03-21 18:00:                              16 VMs
-2025-03-21 19:00:                              16 VMs
-2025-03-21 20:00:                              16 VMs
-2025-03-21 21:00:                              16 VMs
-2025-03-21 22:00:                              6 VMs
-2025-03-21 23:00:                              2 VMs
-2025-03-22 12:00:                              2 VMs
+ 2025-03-21 15:00:                               5 VMs
+ 2025-03-21 16:00:                               6 VMs
+ 2025-03-21 18:00:                               16 VMs
+ 2025-03-21 22:00:                               6 VMs
+```
+
+With `--vms-by-date`:
+
+```
+VMS BY COMPLETION DATE
+======================
+
+2025-03-21
+  vm-alpha-01
+  vm-beta-02
+2025-03-22
+  vm-gamma-03
 ```
 
 ### Gantt Chart Visualization
-With `--gantt`, the tool writes a Gantt chart of VM migrations over time. This chart helps identify:
-- Migration overlaps and patterns
-- Peak migration periods
-- OS-specific migration behaviors
 
-The chart is saved to `charts/migration_gantt_chart.png` by default (override with `--gantt-output`).
+With `--gantt`, the tool writes a Gantt chart PNG of VM migrations over time (matplotlib `Agg` backend). Default path: `charts/migration_gantt_chart.png` (override with `--gantt-output`). The directory is created if needed. Limit which VMs are drawn with a **start and end** chart date (`--since` / `--until`, or chart-only `--gantt-since` / `--gantt-until`); see [Optional date filtering](#optional-date-filtering).
 
-Below is an example
-![plot](charts/migration_gantt_chart.png)
+The chart helps identify migration overlaps, peak periods, and OS-specific timing. Generate it locally from your plan YAML; it is not checked into this repository.
 
 The analyzer uses the following to determine the true effective migration time:
 
@@ -458,6 +530,7 @@ Contributions to VM Migration Analyzer are welcome! The codebase is organized in
 - `migration_information.py`: Core MigrationAnalyzer class with analysis methods
 - `mtv_plan_parser.py`: Main entry point and workflow orchestration
 - `clioutput.py`: Output formatting and report generation
+- `since_filter.py`: UTC date parsing, report/chart window helpers, and VM/plan filtering
 - `visualization.py`: Data visualization with matplotlib
 - `vm_information.py`: Effective-time helpers shared with analysis logic
 

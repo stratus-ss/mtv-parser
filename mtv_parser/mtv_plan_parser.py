@@ -5,12 +5,17 @@ import os
 import yaml
 from clioutput import CLIOutput
 from migration_information import MigrationAnalyzer  # Import the MigrationAnalyzer class
+try:
+    from utils import string_to_datetime
+except ModuleNotFoundError:
+    from mtv_parser.utils import string_to_datetime
+
 from since_filter import (
     chart_cutoff,
     filter_plan_records,
     filter_vm_groups,
-    parse_since_date,
     rebuild_hour_window,
+    vms_continuing_past_until,
 )
 from visualization import plot_gantt_chart
 
@@ -34,38 +39,36 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--since",
-        type=parse_since_date,
+        type=string_to_datetime,
         default=None,
         help=(
-            "Limit reports and the Gantt chart to migrations that overlap this UTC date "
-            "through the latest data (YYYY-MM-DD)."
+            "Limit reports and the Gantt chart to migrations that complete on or after this UTC date (YYYY-MM-DD)."
         ),
     )
     parser.add_argument(
         "--gantt-since",
-        type=parse_since_date,
+        type=string_to_datetime,
         default=None,
         help=(
-            "Limit only the Gantt chart to migrations that overlap this UTC date (YYYY-MM-DD). "
+            "Limit only the Gantt chart to migrations that complete on or after this UTC date (YYYY-MM-DD). "
             "Text reports stay on the full set when this flag is used alone."
         ),
     )
 
     parser.add_argument(
         "--until",
-        type=parse_since_date,
+        type=string_to_datetime,
         default=None,
         help=(
-            "Limit reports and the Gantt chart to migrations that end on or before this UTC date "
-            "until the date specified."
+            "Limit reports and the Gantt chart to migrations that complete on or before the end of this UTC date (YYYY-MM-DD)."
         ),
     )
     parser.add_argument(
         "--gantt-until",
-        type=parse_since_date,
+        type=string_to_datetime,
         default=None,
         help=(
-            "Limit only the Gantt chart to migrations that end on or before this UTC date (YYYY-MM-DD). "
+            "Limit only the Gantt chart to migrations that complete on or before the end of this UTC date (YYYY-MM-DD). "
             "Text reports stay on the full set when this flag is used alone."
         ),
     )
@@ -152,10 +155,8 @@ def _apply_since(
     failed_migrations: list,
     migration_window: dict,
 ) -> tuple[dict, list, list, dict]:
-    """Filter reports when --since is set. A missing cutoff leaves inputs unchanged."""
-    # TODO(range): Filter when either report bound is set, not only when --since is set.
-    # Pass the report window into filter_vm_groups and filter_plan_records.
-    if args.since is not None:
+    """Filter reports when --since or --until is set. Neither bound leaves inputs unchanged."""
+    if args.since is not None or args.until is not None:
         all_vms = filter_vm_groups(all_vms, args.since, args.until)
         successful_migrations = filter_plan_records(successful_migrations, args.since, args.until)
         failed_migrations = filter_plan_records(failed_migrations, args.since, args.until)
@@ -186,7 +187,7 @@ def _peak_concurrency(migration_window: dict) -> tuple:
     return peak_time, max_concurrent
 
 
-def _write_migration_reports(output, analyzer, successful_migrations, failed_migrations, all_vms, concurrency_data) -> None:
+def _write_migration_reports(output, analyzer, successful_migrations, failed_migrations, all_vms, concurrency_data, continuing_past_until) -> None:
     success_migration_report = analyzer.prepare_migration_information(successful_migrations)
     if failed_migrations:
         failed_migration_report = analyzer.prepare_migration_information(failed_migrations)
@@ -204,6 +205,10 @@ def _write_migration_reports(output, analyzer, successful_migrations, failed_mig
         output.write(output.vm_migration_output(vm_summary))
         output.write(("\n\n"))
 
+    if continuing_past_until:
+        output.write(output.continuing_past_until_output(continuing_past_until))
+        output.write(("\n\n"))
+
     output.write(output.operating_system_report(all_vms))
     output.write(("\n\n"))
     output.write(output.generate_concurrency_report(concurrency_data))
@@ -213,7 +218,7 @@ def _write_gantt(args, output, all_vms) -> None:
     if not args.gantt:
         return
     cutoff_start, cutoff_end = chart_cutoff(args.since, args.until, args.gantt_since, args.gantt_until)
-    if cutoff_start is not None and cutoff_end is not None:
+    if cutoff_start is not None or cutoff_end is not None:
         chart_vms = filter_vm_groups(all_vms, cutoff_start, cutoff_end)
     else:
         chart_vms = all_vms
@@ -231,10 +236,14 @@ def main() -> None:
     output = CLIOutput()
     migration_analyzer = MigrationAnalyzer()
     all_vms = defaultdict(list)
+    open_vms = defaultdict(list)
 
     successful_migrations, failed_migrations, migration_window_for_plan = migration_analyzer.get_migration_success_info(
-        mtv_plan_data, all_vms
+        mtv_plan_data, all_vms, open_vms
     )
+    continuing_past_until = []
+    if args.until is not None:
+        continuing_past_until = vms_continuing_past_until(all_vms, open_vms, args.since, args.until)
     all_vms, successful_migrations, failed_migrations, migration_window_for_plan = _apply_since(
         args,
         migration_analyzer,
@@ -246,7 +255,11 @@ def main() -> None:
 
     if not migration_window_for_plan:
         # TODO(range): Keep this early return when the report window removes every migration.
-        output.write("No migration data available. Please ensure your YAML files contain completed migrations.\n")
+        if continuing_past_until:
+            output.write(output.continuing_past_until_output(continuing_past_until))
+            output.write(("\n\n"))
+        else:
+            output.write("No migration data available. Please ensure your YAML files contain completed migrations.\n")
         output.close()
         return
 
@@ -264,6 +277,7 @@ def main() -> None:
         failed_migrations,
         all_vms,
         concurrency_data,
+        continuing_past_until,
     )
     _maybe_write_vms_by_date(args, output, migration_analyzer, all_vms)
     _write_gantt(args, output, all_vms)

@@ -1,77 +1,82 @@
-from datetime import date, datetime, timezone
-from typing import Protocol
-import argparse
+from datetime import datetime
+
+try:
+    from utils import as_naive_utc
+except ModuleNotFoundError:
+    from mtv_parser.utils import as_naive_utc
 
 
-def _as_naive_utc(value: datetime) -> datetime:
-    """
-    Convert a timezone-aware datetime to a naive UTC datetime.
+def completed_in_window(completed: datetime | None, since: datetime | None, until: datetime | None) -> bool:
+    """Return whether a completion instant falls inside the report window.
+
+    A missing completion is out. --since is midnight. --until covers that whole day.
+    
     Args:
-        value: A naive or timezone-aware datetime.
+        completed: The completion time of the VM or plan.
+        since: The start time of the report window.
+        until: The end time of the report window.
     """
-    if value.tzinfo is None:
-        return value
-    return value.astimezone(timezone.utc).replace(tzinfo=None)
-
-    
-def parse_since_date(value: str) -> datetime:
-    """
-    Parse a date string into a datetime object.
-
-    Args:
-        value: The raw --since or --gantt-since string from argparse.
-    """
-    
-    try:
-        return datetime.strptime(value, "%Y-%m-%d")
-    except ValueError:
-        raise argparse.ArgumentTypeError(f"Invalid date format. Expected YYYY-MM-DD, got {value}")
-    
-
-
-def vm_in_time_window(vm: dict, since: datetime | None, until: datetime | None) -> bool:
-    """
-    Check if a VM overlaps with a given since and/or until datetime.
-    Args:
-        vm: One VM record. Read start_time and end_time. Do not write either key.
-        since: Cutoff instant. May be naive or timezone-aware.
-    """
-    cli_start_time_utc = None
-    cli_end_time_utc = None
-    vm_start_time_utc = _as_naive_utc(vm.get("start_time"))
-    vm_end_time_utc = _as_naive_utc(vm.get("end_time"))
-    if since is not None and isinstance(since, datetime):
-        cli_start_time_utc = _as_naive_utc(since)
-    if until is not None and isinstance(until, datetime):
-        cli_end_time_utc = _as_naive_utc(until)
-    
-    # Check if the VM is in the time window by looking at the start and end times of the VM[start_time, end_time] 
-    # and the start and end times of the CLI[since, until]. I want to include the full day of the until date.
-
-    if cli_end_time_utc is not None:
-        cli_end_time_utc = cli_end_time_utc.replace(hour=23, minute=59, second=59, microsecond=999999)
-        if vm_start_time_utc >= cli_start_time_utc and vm_end_time_utc <= cli_end_time_utc:
-            return True
-        else:
+    if not isinstance(completed, datetime):
+        return False
+    completed_utc = as_naive_utc(completed)
+    if since is not None:
+        since_utc = as_naive_utc(since)
+        if completed_utc < since_utc:
             return False
-    if cli_start_time_utc is not None:
-        if vm_start_time_utc >= cli_start_time_utc:
-            return True
-    return False
+    if until is not None:
+        until_utc = as_naive_utc(until)
+        until_end = until_utc.replace(hour=23, minute=59, second=59, microsecond=999999)
+        if completed_utc > until_end:
+            return False
+    return True
+
+
+def vms_continuing_past_until(grouped: dict[str, list[dict]], open_vms: dict, since: datetime | None, until: datetime | None) -> list[dict]:
+    """Return VMs that started in the window and were still going after --until.
+
+    grouped is the unfiltered all_vms dict, so a VM that finished after the window
+    is still here. open_vms holds VMs that have a start and no end; those never
+    enter all_vms. A VM is listed when its start is on or before the end of the
+    until day, on or after --since midnight when that flag is set, and its end is
+    missing or later than the end of the until day. A VM that finished inside the
+    window is left out. Nothing in this list is added to a disk total.
+
+    until is that date at midnight. The end of the day is 23:59:59.999999 UTC,
+    the same instant completed_in_window uses.
+
+    Args:
+        grouped: OS name to VM dicts that have a positive duration.
+        open_vms: OS name to VM dicts that have a start and no end.
+        since: --since midnight, or None when that flag is absent.
+        until: --until midnight, or None. None returns an empty list.
+    """
+    rows = []
+    if until is None:
+        return rows
+    for source in (grouped, open_vms):
+        for vm_list in source.values():
+            for vm in vm_list:
+                if completed_in_window(vm.get("start_time"), since, until):
+                    if not completed_in_window(vm.get("end_time"), None, until):
+                        rows.append(vm)
+    return rows
+
+
 
 def filter_vm_groups(grouped: dict[str, list[dict]], since: datetime | None, until: datetime | None) -> dict[str, list[dict]]:
-    """
-    Filter VM groups based on a given since datetime.
+    """Keep VM groups whose completion falls inside the report window.
+    
     Args:
-        grouped: OS name to the list of VM dicts under that OS. Same VM shape as vm_overlaps_since.
-        since: Cutoff instant, or None when no cutoff is set.
+        grouped: OS name to VM dicts. Each VM may have end_time (datetime).
+        since: The start time of the report window.
+        until: The end time of the report window.
     """
-    if since is None:
+    if since is None and until is None:
         return grouped
     filtered: dict[str, list[dict]] = {}
     for os_key, vm_list in grouped.items():
         for vm in vm_list:
-            if vm_in_time_window(vm, since, until):
+            if completed_in_window(vm.get("end_time"), since, until):
                 if filtered.get(os_key) is None:
                     filtered[os_key] = [vm]
                 else:
@@ -80,19 +85,18 @@ def filter_vm_groups(grouped: dict[str, list[dict]], since: datetime | None, unt
 
 
 def filter_plan_records(plans: list[dict], since: datetime | None, until: datetime | None) -> list[dict]:
-    """
-    Filter plan records based on a given since datetime.
+    """Keep plans whose end_time falls inside the report window.
+    
     Args:
-        plans: Plan summary dicts. Read end_time. Leave every other field as it is.
-        since: Cutoff instant, or None when no cutoff is set.
+        plans: List of plan dictionaries. Each plan may have end_time (datetime).
+        since: The start time of the report window.
+        until: The end time of the report window.
     """
     if since is None and until is None:
         return plans
-    cutoff_date = _as_naive_utc(since)
     all_plans = []
     for plan in plans:
-        plan_end_time = _as_naive_utc(plan["end_time"])
-        if plan_end_time >= cutoff_date:
+        if completed_in_window(plan["end_time"], since, until):
             all_plans.append(plan)
     return all_plans
 

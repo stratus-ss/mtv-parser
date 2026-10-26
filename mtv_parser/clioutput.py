@@ -120,11 +120,11 @@ class CLIOutput:
         effective_runtime: list[list] = [
             ["Average disk size (GiB):", f"{migration_info['average_disk_size_gb']:.1f}"],
             ["Average runtime in minutes:", f"{migration_info['average_time']:.1f}"],
-            ["Longest plan GiB/hour over plan runtime:", f"{migration_info['longest_transfer_speed']:.1f}"],
+            ["Highest plan GiB/hour over plan runtime:", f"{migration_info['longest_transfer_speed']:.1f}"],
             ["Longest runtime in minutes:", f"{migration_info['max_minutes']:.1f}"],
             ["Plan with longest runtime:", migration_info["longest_plan"]["name"]],
             ["Shortest runtime in minutes:", f"{migration_info['min_minutes']:.1f}"],
-            ["Total disk size in longest plan (GiB):", migration_info["longest_disk_size_gb"]],
+            ["Total disk size in longest plan (GiB):", f"{migration_info['longest_disk_size_gb']:.1f}"],
         ]
 
         pipeline_timing: list[list] = []
@@ -168,7 +168,7 @@ class CLIOutput:
             )
 
         totals: list[list] = [
-            ["Total Disk Size Migrated (GiB):", migration_info["total_disk_size_for_migration"]],
+            ["Total Disk Size Migrated (GiB):", f"{migration_info['total_disk_size_for_migration']:.1f}"],
         ]
         if type_of_migration != "failed":
             totals.append(
@@ -206,7 +206,7 @@ class CLIOutput:
             ["Average runtime in minutes:", f'{vm_info["average_time_mins"]:.1f}'],
             ["Longest runtime in minutes:", f'{vm_info["max_minutes"]:.1f}'],
             ["Longest runtime VM:", vm_info["longest_running_vm_name"]],
-            ["Longest VM GiB/hour over plan runtime:", f'{vm_info["longest_vm_transferspeed"]:.1f}'],
+            ["Highest VM GiB/hour over plan runtime:", f'{vm_info["longest_vm_transferspeed"]:.1f}'],
             ["Shortest runtime in minutes:", f'{vm_info["min_minutes"]:.1f}'],
             ["Shortest runtime VM:", vm_info["shortest_vm_name"]],
         ]
@@ -214,7 +214,7 @@ class CLIOutput:
             effective_runtime.append(["Longest VM disk-copy minutes:", f'{vm_info["longest_transfer_minutes"]:.1f}'])
         if "longest_transfer_gb_per_hour" in vm_info:
             effective_runtime.append(
-                ["Longest VM GiB/hour over disk-copy time:", f'{vm_info["longest_transfer_gb_per_hour"]:.1f}']
+                ["Highest VM GiB/hour over disk-copy time:", f'{vm_info["longest_transfer_gb_per_hour"]:.1f}']
             )
 
         disk_size = [
@@ -269,6 +269,33 @@ class CLIOutput:
         ]
         return _tabulate_sections(preamble, sections)
 
+    def continuing_past_until_output(self: t.Self, rows: list[dict]) -> str:
+        """Format VMs that started in the window and continued past --until.
+
+        Each line shows the name, the start, the disk size in GiB when disk_size
+        is positive, and either the completion time or "still running". The count
+        line states that these disks are not in the totals above.
+        """
+        header = "VMS CONTINUING PAST UNTIL"
+        sep = "=" * len(header)
+        lines = ["", header, sep, ""]
+        for vm in rows:
+            name = vm.get("name")
+            start_time = vm.get("start_time")
+            end_time = vm.get("end_time")
+            if end_time:
+                completion = str(end_time)
+            else:
+                completion = "still running"
+            disk_size = vm.get("disk_size") or 0
+            if disk_size > 0:
+                disk_gib = disk_size / 1024
+                lines.append(f"{name}  start {start_time}  {disk_gib:.1f} GiB  {completion}")
+            else:
+                lines.append(f"{name}  start {start_time}  {completion}")
+        lines.append(f"{len(rows)} VMs. Their disks are not in the totals above.")
+        return "\n".join(lines) + "\n"
+
     def vms_by_date_output(self: t.Self, vms_by_date: dict) -> str:
         """Format successful VM names grouped by UTC completion date.
 
@@ -307,7 +334,7 @@ class CLIOutput:
             rows.append([header])
             rows.append([sep])
             rows.append(["Number of VMs: ", f"{len(all_vms[os])}"])
-            rows.append(["Total Disk Size (GiB):", f"{total_disk_size}"])
+            rows.append(["Total Disk Size (GiB):", f"{round(total_disk_size, 1):.1f}"])
             rows.append([])
 
         return tabulate(rows, tablefmt="plain")
